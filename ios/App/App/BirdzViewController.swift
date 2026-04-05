@@ -421,6 +421,17 @@ private enum BirdzReakcieScrapeJS {
 
         function trimText(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
 
+        // Simple hash of entire text content for change detection
+        function simpleHash(str) {
+            var hash = 0;
+            for (var i = 0; i < str.length; i++) {
+                var ch = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + ch;
+                hash = hash & hash; // Convert to 32bit integer
+            }
+            return hash.toString(36);
+        }
+
         function detectType(text) {
             var v = text.toLowerCase();
             if (v.indexOf('tajn') > -1 || v.indexOf('správ') > -1 || v.indexOf('sprav') > -1) return 'Tajná správa';
@@ -435,7 +446,11 @@ private enum BirdzReakcieScrapeJS {
             return 'Upozornenie';
         }
 
-        // Scrape ALL visible items on /reakcie/ page
+        // Get FULL raw text of the page body for hash comparison
+        var rawText = trimText(document.body ? document.body.innerText : '');
+        var contentHash = simpleHash(rawText);
+
+        // Also extract top items for notification detail
         var items = [];
         var elements = document.querySelectorAll('li, .item, .notification-item, [class*="reakci"], [class*="notif"], tr, .row');
         for (var i = 0; i < elements.length; i++) {
@@ -443,7 +458,6 @@ private enum BirdzReakcieScrapeJS {
             var text = trimText(el.textContent);
             if (!text || text.length < 10 || text.length > 500) continue;
 
-            // Try to get timestamp if available
             var timeEl = el.querySelector('time, .time, .date, [class*="time"], [class*="date"], small');
             var time = timeEl ? trimText(timeEl.textContent) : '';
 
@@ -456,7 +470,7 @@ private enum BirdzReakcieScrapeJS {
             if (items.length >= 20) break;
         }
 
-        handler.postMessage({ items: items });
+        handler.postMessage({ contentHash: contentHash, items: items, rawText: rawText.slice(0, 500) });
         return 'birdz-reakcie-scraped';
     })();
     """#
