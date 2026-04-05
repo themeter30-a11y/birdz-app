@@ -208,7 +208,7 @@ final class BirdzViewController: CAPBridgeViewController {
     private func processScrapedItems(_ payload: [String: Any]) {
         let contentHash = payload["contentHash"] as? String ?? ""
         let items = payload["items"] as? [[String: Any]] ?? []
-        let rawText = payload["rawText"] as? String ?? ""
+        let totalCount = payload["totalCount"] as? Int ?? items.count
 
         // First run: just store the state, don't notify
         if isFirstScrape {
@@ -218,26 +218,37 @@ final class BirdzViewController: CAPBridgeViewController {
             return
         }
 
-        // ANY change at all — even a single character — triggers notification
+        // ANY change at all triggers notification
         if contentHash != lastContentHash {
             print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
 
-            // Find the top (newest) item to describe what changed
             if let topItem = items.first {
                 let type = topItem["type"] as? String ?? "Upozornenie"
-                let text = topItem["text"] as? String ?? "Máš novú notifikáciu na Birdz"
+                let author = topItem["author"] as? String ?? ""
+                let text = topItem["text"] as? String ?? ""
+                let target = topItem["target"] as? String ?? ""
+                let time = topItem["time"] as? String ?? ""
 
-                sendNotification(
-                    title: "Birdz – \(type)",
-                    body: text,
-                    badge: 1
-                )
+                // Build rich title
+                let title: String
+                if !author.isEmpty {
+                    title = "Birdz – \(type) od \(author)"
+                } else {
+                    title = "Birdz – \(type)"
+                }
+
+                // Build rich body with all available info
+                var bodyParts: [String] = []
+                if !text.isEmpty { bodyParts.append(text) }
+                if !target.isEmpty { bodyParts.append("➜ \(target)") }
+                if !time.isEmpty { bodyParts.append("🕐 \(time)") }
+                if totalCount > 1 { bodyParts.append("📬 Celkom \(totalCount) notifikácií") }
+
+                let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
+
+                sendNotification(title: title, subtitle: type, body: body, badge: totalCount)
             } else {
-                sendNotification(
-                    title: "Birdz",
-                    body: "Máš novú aktivitu v reakciách",
-                    badge: 1
-                )
+                sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: 1)
             }
 
             lastContentHash = contentHash
@@ -246,13 +257,28 @@ final class BirdzViewController: CAPBridgeViewController {
 
     // MARK: - iOS Notifications
 
-    private func sendNotification(title: String, body: String, badge: Int) {
+    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int) {
         let content = UNMutableNotificationContent()
         content.title = title
+        if !subtitle.isEmpty { content.subtitle = subtitle }
         content.body = body
         content.sound = .default
         content.badge = NSNumber(value: badge)
         content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
+
+        // Attach Birdz icon to the notification
+        if let iconURL = Bundle.main.url(forResource: "birdz_notification", withExtension: "png") {
+            do {
+                let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+                let tmpFile = tmpDir.appendingPathComponent("birdz_notification.png")
+                try FileManager.default.copyItem(at: iconURL, to: tmpFile)
+                let attachment = try UNNotificationAttachment(identifier: "birdz-icon", url: tmpFile, options: nil)
+                content.attachments = [attachment]
+            } catch {
+                print("BirdzScraper: Attachment error: \(error.localizedDescription)")
+            }
+        }
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
         let request = UNNotificationRequest(
@@ -450,7 +476,7 @@ private enum BirdzReakcieScrapeJS {
         var rawText = trimText(document.body ? document.body.innerText : '');
         var contentHash = simpleHash(rawText);
 
-        // Also extract top items for notification detail
+        // Extract detailed items with author, target, time
         var items = [];
         var elements = document.querySelectorAll('li, .item, .notification-item, [class*="reakci"], [class*="notif"], tr, .row');
         for (var i = 0; i < elements.length; i++) {
@@ -461,16 +487,33 @@ private enum BirdzReakcieScrapeJS {
             var timeEl = el.querySelector('time, .time, .date, [class*="time"], [class*="date"], small');
             var time = timeEl ? trimText(timeEl.textContent) : '';
 
+            // Try to extract author (usually a link or bold text at start)
+            var authorEl = el.querySelector('a[href*="/profil/"], a[href*="/uzivatel/"], a[href*="/user/"], strong, b');
+            var author = authorEl ? trimText(authorEl.textContent) : '';
+
+            // Try to extract target content (second link, or topic/status reference)
+            var allLinks = el.querySelectorAll('a');
+            var target = '';
+            for (var j = 0; j < allLinks.length; j++) {
+                var linkText = trimText(allLinks[j].textContent);
+                if (linkText && linkText !== author && linkText.length > 3) {
+                    target = linkText.slice(0, 100);
+                    break;
+                }
+            }
+
             items.push({
                 type: detectType(text),
-                text: text.slice(0, 200),
+                text: text.slice(0, 300),
+                author: author.slice(0, 50),
+                target: target,
                 time: time
             });
 
             if (items.length >= 20) break;
         }
 
-        handler.postMessage({ contentHash: contentHash, items: items, rawText: rawText.slice(0, 500) });
+        handler.postMessage({ contentHash: contentHash, items: items, totalCount: items.length, rawText: rawText.slice(0, 500) });
         return 'birdz-reakcie-scraped';
     })();
     """#
