@@ -15,7 +15,7 @@ final class BirdzViewController: CAPBridgeViewController {
     // Scraper: hidden webview that loads /reakcie/ every 5s
     private var scraperWebView: WKWebView?
     private let scraperHandler = "birdzReakcieScraper"
-    private var lastItemSignatures = Set<String>()
+    private var lastContentHash: String = ""
     private var isFirstScrape = true
     private var scraperIsLoading = false
 
