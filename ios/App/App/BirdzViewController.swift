@@ -208,7 +208,7 @@ final class BirdzViewController: CAPBridgeViewController {
     private func processScrapedItems(_ payload: [String: Any]) {
         let contentHash = payload["contentHash"] as? String ?? ""
         let items = payload["items"] as? [[String: Any]] ?? []
-        let rawText = payload["rawText"] as? String ?? ""
+        let totalCount = payload["totalCount"] as? Int ?? items.count
 
         // First run: just store the state, don't notify
         if isFirstScrape {
@@ -218,26 +218,37 @@ final class BirdzViewController: CAPBridgeViewController {
             return
         }
 
-        // ANY change at all — even a single character — triggers notification
+        // ANY change at all triggers notification
         if contentHash != lastContentHash {
             print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
 
-            // Find the top (newest) item to describe what changed
             if let topItem = items.first {
                 let type = topItem["type"] as? String ?? "Upozornenie"
-                let text = topItem["text"] as? String ?? "Máš novú notifikáciu na Birdz"
+                let author = topItem["author"] as? String ?? ""
+                let text = topItem["text"] as? String ?? ""
+                let target = topItem["target"] as? String ?? ""
+                let time = topItem["time"] as? String ?? ""
 
-                sendNotification(
-                    title: "Birdz – \(type)",
-                    body: text,
-                    badge: 1
-                )
+                // Build rich title
+                let title: String
+                if !author.isEmpty {
+                    title = "Birdz – \(type) od \(author)"
+                } else {
+                    title = "Birdz – \(type)"
+                }
+
+                // Build rich body with all available info
+                var bodyParts: [String] = []
+                if !text.isEmpty { bodyParts.append(text) }
+                if !target.isEmpty { bodyParts.append("➜ \(target)") }
+                if !time.isEmpty { bodyParts.append("🕐 \(time)") }
+                if totalCount > 1 { bodyParts.append("📬 Celkom \(totalCount) notifikácií") }
+
+                let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
+
+                sendNotification(title: title, subtitle: type, body: body, badge: totalCount)
             } else {
-                sendNotification(
-                    title: "Birdz",
-                    body: "Máš novú aktivitu v reakciách",
-                    badge: 1
-                )
+                sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: 1)
             }
 
             lastContentHash = contentHash
