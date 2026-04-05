@@ -15,7 +15,7 @@ final class BirdzViewController: CAPBridgeViewController {
     // Scraper: hidden webview that loads /reakcie/ every 5s
     private var scraperWebView: WKWebView?
     private let scraperHandler = "birdzReakcieScraper"
-    private var lastItemSignatures = Set<String>()
+    private var lastContentHash: String = ""
     private var isFirstScrape = true
     private var scraperIsLoading = false
 
@@ -206,47 +206,42 @@ final class BirdzViewController: CAPBridgeViewController {
     // MARK: - Process scraped data from /reakcie/
 
     private func processScrapedItems(_ payload: [String: Any]) {
+        let contentHash = payload["contentHash"] as? String ?? ""
         let items = payload["items"] as? [[String: Any]] ?? []
-
-        var currentSignatures = Set<String>()
-        for item in items {
-            let sig = itemSignature(item)
-            currentSignatures.insert(sig)
-        }
+        let rawText = payload["rawText"] as? String ?? ""
 
         // First run: just store the state, don't notify
         if isFirstScrape {
-            lastItemSignatures = currentSignatures
+            lastContentHash = contentHash
             isFirstScrape = false
-            print("BirdzScraper: Initial state stored, \(currentSignatures.count) items")
+            print("BirdzScraper: Initial state stored, hash=\(contentHash), \(items.count) items")
             return
         }
 
-        // Find new items (signatures we haven't seen before)
-        let newItems = items.filter { !lastItemSignatures.contains(itemSignature($0)) }
+        // ANY change at all — even a single character — triggers notification
+        if contentHash != lastContentHash {
+            print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
 
-        if !newItems.isEmpty {
-            print("BirdzScraper: \(newItems.count) new items detected!")
-            for item in newItems {
-                let type = item["type"] as? String ?? "Upozornenie"
-                let text = item["text"] as? String ?? "Máš novú notifikáciu"
+            // Find the top (newest) item to describe what changed
+            if let topItem = items.first {
+                let type = topItem["type"] as? String ?? "Upozornenie"
+                let text = topItem["text"] as? String ?? "Máš novú notifikáciu na Birdz"
 
                 sendNotification(
                     title: "Birdz – \(type)",
                     body: text,
-                    badge: newItems.count
+                    badge: 1
+                )
+            } else {
+                sendNotification(
+                    title: "Birdz",
+                    body: "Máš novú aktivitu v reakciách",
+                    badge: 1
                 )
             }
+
+            lastContentHash = contentHash
         }
-
-        lastItemSignatures = currentSignatures
-    }
-
-    private func itemSignature(_ item: [String: Any]) -> String {
-        let type = item["type"] as? String ?? ""
-        let text = item["text"] as? String ?? ""
-        let time = item["time"] as? String ?? ""
-        return "\(type)|\(text)|\(time)"
     }
 
     // MARK: - iOS Notifications
@@ -426,6 +421,17 @@ private enum BirdzReakcieScrapeJS {
 
         function trimText(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
 
+        // Simple hash of entire text content for change detection
+        function simpleHash(str) {
+            var hash = 0;
+            for (var i = 0; i < str.length; i++) {
+                var ch = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + ch;
+                hash = hash & hash; // Convert to 32bit integer
+            }
+            return hash.toString(36);
+        }
+
         function detectType(text) {
             var v = text.toLowerCase();
             if (v.indexOf('tajn') > -1 || v.indexOf('správ') > -1 || v.indexOf('sprav') > -1) return 'Tajná správa';
@@ -440,7 +446,11 @@ private enum BirdzReakcieScrapeJS {
             return 'Upozornenie';
         }
 
-        // Scrape ALL visible items on /reakcie/ page
+        // Get FULL raw text of the page body for hash comparison
+        var rawText = trimText(document.body ? document.body.innerText : '');
+        var contentHash = simpleHash(rawText);
+
+        // Also extract top items for notification detail
         var items = [];
         var elements = document.querySelectorAll('li, .item, .notification-item, [class*="reakci"], [class*="notif"], tr, .row');
         for (var i = 0; i < elements.length; i++) {
@@ -448,7 +458,6 @@ private enum BirdzReakcieScrapeJS {
             var text = trimText(el.textContent);
             if (!text || text.length < 10 || text.length > 500) continue;
 
-            // Try to get timestamp if available
             var timeEl = el.querySelector('time, .time, .date, [class*="time"], [class*="date"], small');
             var time = timeEl ? trimText(timeEl.textContent) : '';
 
@@ -461,7 +470,7 @@ private enum BirdzReakcieScrapeJS {
             if (items.length >= 20) break;
         }
 
-        handler.postMessage({ items: items });
+        handler.postMessage({ contentHash: contentHash, items: items, rawText: rawText.slice(0, 500) });
         return 'birdz-reakcie-scraped';
     })();
     """#
