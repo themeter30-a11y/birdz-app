@@ -206,47 +206,42 @@ final class BirdzViewController: CAPBridgeViewController {
     // MARK: - Process scraped data from /reakcie/
 
     private func processScrapedItems(_ payload: [String: Any]) {
+        let contentHash = payload["contentHash"] as? String ?? ""
         let items = payload["items"] as? [[String: Any]] ?? []
-
-        var currentSignatures = Set<String>()
-        for item in items {
-            let sig = itemSignature(item)
-            currentSignatures.insert(sig)
-        }
+        let rawText = payload["rawText"] as? String ?? ""
 
         // First run: just store the state, don't notify
         if isFirstScrape {
-            lastItemSignatures = currentSignatures
+            lastContentHash = contentHash
             isFirstScrape = false
-            print("BirdzScraper: Initial state stored, \(currentSignatures.count) items")
+            print("BirdzScraper: Initial state stored, hash=\(contentHash), \(items.count) items")
             return
         }
 
-        // Find new items (signatures we haven't seen before)
-        let newItems = items.filter { !lastItemSignatures.contains(itemSignature($0)) }
+        // ANY change at all — even a single character — triggers notification
+        if contentHash != lastContentHash {
+            print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
 
-        if !newItems.isEmpty {
-            print("BirdzScraper: \(newItems.count) new items detected!")
-            for item in newItems {
-                let type = item["type"] as? String ?? "Upozornenie"
-                let text = item["text"] as? String ?? "Máš novú notifikáciu"
+            // Find the top (newest) item to describe what changed
+            if let topItem = items.first {
+                let type = topItem["type"] as? String ?? "Upozornenie"
+                let text = topItem["text"] as? String ?? "Máš novú notifikáciu na Birdz"
 
                 sendNotification(
                     title: "Birdz – \(type)",
                     body: text,
-                    badge: newItems.count
+                    badge: 1
+                )
+            } else {
+                sendNotification(
+                    title: "Birdz",
+                    body: "Máš novú aktivitu v reakciách",
+                    badge: 1
                 )
             }
+
+            lastContentHash = contentHash
         }
-
-        lastItemSignatures = currentSignatures
-    }
-
-    private func itemSignature(_ item: [String: Any]) -> String {
-        let type = item["type"] as? String ?? ""
-        let text = item["text"] as? String ?? ""
-        let time = item["time"] as? String ?? ""
-        return "\(type)|\(text)|\(time)"
     }
 
     // MARK: - iOS Notifications
