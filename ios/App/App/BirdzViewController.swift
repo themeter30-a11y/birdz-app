@@ -5,19 +5,19 @@ import UserNotifications
 
 final class BirdzViewController: CAPBridgeViewController {
 
+    // MARK: - Properties
+
     private var pollTimer: Timer?
-    
-    private var lastBadgeCount: Int = -1
-    private var lastSignatures = Set<String>()
     private var refreshControl: UIRefreshControl?
-    private let handlerName = "birdzNotificationMonitor"
-    private let detailHandlerName = "birdzDetailScraper"
     private var didInstallScripts = false
     private var lastAppliedTopInset: CGFloat = 0
 
-    // Hidden webview for scraping /reakcie/ page
+    // Scraper: hidden webview that loads /reakcie/ every 5s
     private var scraperWebView: WKWebView?
-    private var pendingBadge: Int = 0
+    private let scraperHandler = "birdzReakcieScraper"
+    private var lastItemSignatures = Set<String>()
+    private var isFirstScrape = true
+    private var scraperIsLoading = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -48,18 +48,18 @@ final class BirdzViewController: CAPBridgeViewController {
     deinit {
         stopPolling()
         NotificationCenter.default.removeObserver(self)
-        webView?.configuration.userContentController.removeScriptMessageHandler(forName: handlerName)
-        scraperWebView?.configuration.userContentController.removeScriptMessageHandler(forName: detailHandlerName)
+        scraperWebView?.configuration.userContentController.removeScriptMessageHandler(forName: scraperHandler)
     }
+
+    // MARK: - Lifecycle
 
     @objc private func handleAppDidBecomeActive() {
         configureWebViewIfNeeded()
         startPolling()
-        runScrape()
     }
 
     @objc private func handleAppWillResignActive() {
-        // Keep polling every 5 seconds even in background
+        // Keep polling even in background
     }
 
     private func registerLifecycleObservers() {
@@ -69,7 +69,7 @@ final class BirdzViewController: CAPBridgeViewController {
                                                name: UIApplication.willResignActiveNotification, object: nil)
     }
 
-    // MARK: - WebView Configuration
+    // MARK: - Main WebView Configuration
 
     private func configureWebViewIfNeeded() {
         guard let wv = webView else { return }
@@ -84,11 +84,12 @@ final class BirdzViewController: CAPBridgeViewController {
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsLinkPreview = true
 
-        // Add pinch-to-zoom gesture recognizer as backup
+        // Pinch-to-zoom backup
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
         pinch.delegate = self
         wv.scrollView.addGestureRecognizer(pinch)
 
+        // Pull-to-refresh
         if refreshControl == nil {
             let rc = UIRefreshControl()
             rc.tintColor = .systemRed
@@ -97,17 +98,14 @@ final class BirdzViewController: CAPBridgeViewController {
             refreshControl = rc
         }
 
-        let controller = wv.configuration.userContentController
-        controller.removeScriptMessageHandler(forName: handlerName)
-        controller.add(self, name: handlerName)
-
+        // Inject zoom-fix JS
         if !didInstallScripts {
             let script = WKUserScript(
                 source: BirdzWebViewJS.source,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true
             )
-            controller.addUserScript(script)
+            wv.configuration.userContentController.addUserScript(script)
             didInstallScripts = true
         }
 
@@ -115,38 +113,24 @@ final class BirdzViewController: CAPBridgeViewController {
         updateWebViewInsets()
     }
 
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        // Native pinch handled by scrollView zoom
-    }
-
-    private func setupScraperWebView() {
-        let config = WKWebViewConfiguration()
-        config.userContentController.add(self, name: detailHandlerName)
-
-        let scraper = WKWebView(frame: .zero, configuration: config)
-        scraper.isHidden = true
-        view.addSubview(scraper)
-        scraperWebView = scraper
-    }
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {}
 
     private func updateWebViewInsets() {
         guard let wv = webView else { return }
         let topInset = max(view.safeAreaInsets.top, 0)
         guard abs(topInset - lastAppliedTopInset) > 0.5 else { return }
-        let previousTopInset = lastAppliedTopInset
+        let prev = lastAppliedTopInset
 
-        var contentInset = wv.scrollView.contentInset
-        contentInset.top = topInset
-        wv.scrollView.contentInset = contentInset
+        var ci = wv.scrollView.contentInset
+        ci.top = topInset
+        wv.scrollView.contentInset = ci
 
-        var indicatorInsets = wv.scrollView.scrollIndicatorInsets
-        indicatorInsets.top = topInset
-        wv.scrollView.scrollIndicatorInsets = indicatorInsets
+        var si = wv.scrollView.scrollIndicatorInsets
+        si.top = topInset
+        wv.scrollView.scrollIndicatorInsets = si
 
-        if previousTopInset == 0 || abs(wv.scrollView.contentOffset.y + previousTopInset) < 2 {
-            wv.scrollView.setContentOffset(
-                CGPoint(x: wv.scrollView.contentOffset.x, y: -topInset), animated: false
-            )
+        if prev == 0 || abs(wv.scrollView.contentOffset.y + prev) < 2 {
+            wv.scrollView.setContentOffset(CGPoint(x: wv.scrollView.contentOffset.x, y: -topInset), animated: false)
         }
         lastAppliedTopInset = topInset
     }
@@ -166,15 +150,31 @@ final class BirdzViewController: CAPBridgeViewController {
         }
     }
 
+    // MARK: - Hidden Scraper WebView (polls /reakcie/ every 5s)
+
+    private func setupScraperWebView() {
+        let config = WKWebViewConfiguration()
+        // Share cookies/session with main webview so we see logged-in content
+        config.processPool = webView?.configuration.processPool ?? WKProcessPool()
+        config.websiteDataStore = webView?.configuration.websiteDataStore ?? .default()
+        config.userContentController.add(self, name: scraperHandler)
+
+        let scraper = WKWebView(frame: .zero, configuration: config)
+        scraper.isHidden = true
+        view.addSubview(scraper)
+        scraperWebView = scraper
+    }
+
     // MARK: - Polling
 
     private func startPolling() {
         stopPolling()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.runScrape()
+            self?.loadReakciePage()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.runScrape()
+        // First scrape after 2s to let session load
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.loadReakciePage()
         }
     }
 
@@ -183,104 +183,81 @@ final class BirdzViewController: CAPBridgeViewController {
         pollTimer = nil
     }
 
-    private func runScrape() {
-        guard let wv = webView else { return }
-        DispatchQueue.main.async {
-            wv.evaluateJavaScript(BirdzScrapeJS.source) { _, error in
-                if let error = error {
-                    print("BirdzViewController: JS scrape error: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-
-    // MARK: - Scrape /reakcie/ for detail info
-
-    private func scrapeReakcieForDetails(badge: Int) {
-        pendingBadge = badge
+    /// Load /reakcie/ in hidden webview, then inject scraping JS after page loads
+    private func loadReakciePage() {
+        guard !scraperIsLoading else { return }
         guard let scraper = scraperWebView,
               let url = URL(string: "https://www.birdz.sk/reakcie/") else { return }
+
+        scraperIsLoading = true
         scraper.load(URLRequest(url: url))
 
-        // After page loads, inject scraping JS
+        // Wait for page to load, then inject scraper JS
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
             self?.scraperWebView?.evaluateJavaScript(BirdzReakcieScrapeJS.source) { _, error in
+                self?.scraperIsLoading = false
                 if let error = error {
-                    print("BirdzViewController: Reakcie scrape error: \(error.localizedDescription)")
+                    print("BirdzScraper: JS error: \(error.localizedDescription)")
                 }
             }
         }
     }
 
-    // MARK: - Process notification payload from main page
+    // MARK: - Process scraped data from /reakcie/
 
-    private func processPayload(_ payload: [String: Any]) {
-        let totalCount = payload["totalCount"] as? Int ?? 0
+    private func processScrapedItems(_ payload: [String: Any]) {
+        let items = payload["items"] as? [[String: Any]] ?? []
 
-        DispatchQueue.main.async {
-            UIApplication.shared.applicationIconBadgeNumber = totalCount
+        var currentSignatures = Set<String>()
+        for item in items {
+            let sig = itemSignature(item)
+            currentSignatures.insert(sig)
         }
 
-        // First run — just store state
-        guard lastBadgeCount >= 0 else {
-            lastBadgeCount = totalCount
+        // First run: just store the state, don't notify
+        if isFirstScrape {
+            lastItemSignatures = currentSignatures
+            isFirstScrape = false
+            print("BirdzScraper: Initial state stored, \(currentSignatures.count) items")
             return
         }
 
-        // Badge increased — scrape /reakcie/ for details
-        if totalCount > lastBadgeCount {
-            scrapeReakcieForDetails(badge: totalCount)
-        }
+        // Find new items (signatures we haven't seen before)
+        let newItems = items.filter { !lastItemSignatures.contains(itemSignature($0)) }
 
-        lastBadgeCount = totalCount
-    }
-
-    // MARK: - Process detail payload from /reakcie/
-
-    private func processDetailPayload(_ payload: [String: Any]) {
-        let details = payload["details"] as? [[String: Any]] ?? []
-        let newSignatures = Set(details.map { sig($0) })
-
-        let unseen = details.filter { !lastSignatures.contains(sig($0)) }
-
-        if !unseen.isEmpty {
-            for detail in unseen {
-                let type = detail["type"] as? String ?? "Upozornenie"
-                let text = detail["text"] as? String ?? "Máš novú notifikáciu"
+        if !newItems.isEmpty {
+            print("BirdzScraper: \(newItems.count) new items detected!")
+            for item in newItems {
+                let type = item["type"] as? String ?? "Upozornenie"
+                let text = item["text"] as? String ?? "Máš novú notifikáciu"
 
                 sendNotification(
                     title: "Birdz – \(type)",
                     body: text,
-                    badge: pendingBadge,
-                    deepLink: "https://www.birdz.sk/reakcie/"
+                    badge: newItems.count
                 )
             }
-        } else if pendingBadge > lastBadgeCount {
-            let diff = pendingBadge - lastBadgeCount
-            sendNotification(
-                title: "Birdz",
-                body: diff == 1 ? "Máš novú notifikáciu" : "Máš \(diff) nových notifikácií",
-                badge: pendingBadge,
-                deepLink: "https://www.birdz.sk/reakcie/"
-            )
         }
 
-        lastSignatures = newSignatures
+        lastItemSignatures = currentSignatures
     }
 
-    private func sig(_ detail: [String: Any]) -> String {
-        let type = detail["type"] as? String ?? ""
-        let text = detail["text"] as? String ?? ""
-        return "\(type)|\(text)"
+    private func itemSignature(_ item: [String: Any]) -> String {
+        let type = item["type"] as? String ?? ""
+        let text = item["text"] as? String ?? ""
+        let time = item["time"] as? String ?? ""
+        return "\(type)|\(text)|\(time)"
     }
 
-    private func sendNotification(title: String, body: String, badge: Int, deepLink: String) {
+    // MARK: - iOS Notifications
+
+    private func sendNotification(title: String, body: String, badge: Int) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         content.badge = NSNumber(value: badge)
-        content.userInfo = ["deepLink": deepLink]
+        content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
         let request = UNNotificationRequest(
@@ -291,12 +268,12 @@ final class BirdzViewController: CAPBridgeViewController {
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("BirdzViewController: Notification error: \(error.localizedDescription)")
+                print("BirdzScraper: Notification error: \(error.localizedDescription)")
             }
         }
     }
 
-    // MARK: - Deep link navigation
+    // MARK: - Deep link
 
     private func navigateToURL(_ urlString: String) {
         guard let wv = webView else { return }
@@ -319,10 +296,8 @@ extension BirdzViewController: UIGestureRecognizerDelegate {
 
 extension BirdzViewController: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == handlerName, let payload = message.body as? [String: Any] {
-            processPayload(payload)
-        } else if message.name == detailHandlerName, let payload = message.body as? [String: Any] {
-            processDetailPayload(payload)
+        if message.name == scraperHandler, let payload = message.body as? [String: Any] {
+            processScrapedItems(payload)
         }
     }
 }
@@ -347,7 +322,7 @@ extension BirdzViewController: UNUserNotificationCenterDelegate {
     }
 }
 
-// MARK: - JavaScript: WebView enhancements (viewport zoom + touch + CSS overrides)
+// MARK: - JavaScript: Zoom/Safari enhancements
 
 private enum BirdzWebViewJS {
     static let source = #"""
@@ -386,7 +361,6 @@ private enum BirdzWebViewJS {
         }
 
         function killZoomBlockers() {
-            // Remove any JS that blocks pinch zoom
             document.addEventListener('touchstart', function(e) {}, {passive: true});
             document.addEventListener('touchmove', function(e) {}, {passive: true});
             document.addEventListener('gesturestart', function(e) { e.stopPropagation(); }, true);
@@ -437,78 +411,18 @@ private enum BirdzWebViewJS {
             forceZoomCSS();
         }, 2000);
 
-        return 'birdz-enhancements-v3';
+        return 'birdz-enhancements-v4';
     })();
     """#
 }
 
-// MARK: - JavaScript: Badge count scraping (runs on main page every 5s)
-
-private enum BirdzScrapeJS {
-    static let source = #"""
-    (function() {
-        var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.birdzNotificationMonitor;
-        if (!handler) return 'no-handler';
-
-        function trimText(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
-
-        function parseCount(text) {
-            var m = trimText(text).match(/\d+/);
-            return m ? parseInt(m[0], 10) : 0;
-        }
-
-        // Look for the red badge number in top-right corner
-        function extractTotalCount() {
-            // Try badge selectors used by birdz.sk
-            var selectors = [
-                '.button-more .badge',
-                '.header_user_avatar .badge',
-                '.header .badge',
-                '.badge',
-                '[class*="notif"] .badge',
-                '.notification-count',
-                '.notif-count'
-            ];
-            for (var i = 0; i < selectors.length; i++) {
-                var els = document.querySelectorAll(selectors[i]);
-                for (var j = 0; j < els.length; j++) {
-                    var v = parseCount(els[j].textContent);
-                    if (v > 0) return v;
-                }
-            }
-
-            // Fallback: any small number in header area
-            var header = document.querySelector('header, .header, #header, nav, .page-content-wrapper');
-            if (!header) return 0;
-            var nodes = header.querySelectorAll('span, div, sup, strong, b, a');
-            for (var k = 0; k < nodes.length; k++) {
-                var el = nodes[k];
-                var text = trimText(el.textContent);
-                if (/^\d+$/.test(text)) {
-                    var v = parseInt(text, 10);
-                    if (v > 0 && v < 1000 && el.offsetWidth < 60 && el.offsetHeight < 60) return v;
-                }
-            }
-            return 0;
-        }
-
-        handler.postMessage({
-            totalCount: extractTotalCount(),
-            sourceUrl: window.location.href
-        });
-
-        return 'birdz-badge-scraped';
-    })();
-    """#
-}
-
-// MARK: - JavaScript: Scrape /reakcie/ for notification details (bold = new)
+// MARK: - JavaScript: Scrape /reakcie/ page for notification items
 
 private enum BirdzReakcieScrapeJS {
     static let source = #"""
     (function() {
-        var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.birdzDetailScraper;
-        if (!handler) return 'no-detail-handler';
+        var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.birdzReakcieScraper;
+        if (!handler) return 'no-handler';
 
         function trimText(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
 
@@ -526,33 +440,28 @@ private enum BirdzReakcieScrapeJS {
             return 'Upozornenie';
         }
 
-        // On /reakcie/ page, new (unread) items are bold
-        var details = [];
-        var items = document.querySelectorAll('li, .item, .notification-item, [class*="reakci"], [class*="notif"], tr, .row');
-        for (var i = 0; i < items.length; i++) {
-            var item = items[i];
-            var text = trimText(item.textContent);
-            if (!text || text.length < 5) continue;
+        // Scrape ALL visible items on /reakcie/ page
+        var items = [];
+        var elements = document.querySelectorAll('li, .item, .notification-item, [class*="reakci"], [class*="notif"], tr, .row');
+        for (var i = 0; i < elements.length; i++) {
+            var el = elements[i];
+            var text = trimText(el.textContent);
+            if (!text || text.length < 10 || text.length > 500) continue;
 
-            // Check if item is bold (unread/new)
-            var isBold = false;
-            var bolds = item.querySelectorAll('strong, b, [style*="bold"], [class*="bold"], [class*="unread"], [class*="new"]');
-            if (bolds.length > 0) isBold = true;
-            if (!isBold) {
-                var cs = window.getComputedStyle(item);
-                if (cs.fontWeight === 'bold' || parseInt(cs.fontWeight) >= 700) isBold = true;
-            }
+            // Try to get timestamp if available
+            var timeEl = el.querySelector('time, .time, .date, [class*="time"], [class*="date"], small');
+            var time = timeEl ? trimText(timeEl.textContent) : '';
 
-            if (isBold && text.length > 5 && text.length < 500) {
-                details.push({
-                    type: detectType(text),
-                    text: text.slice(0, 200)
-                });
-            }
-            if (details.length >= 5) break;
+            items.push({
+                type: detectType(text),
+                text: text.slice(0, 200),
+                time: time
+            });
+
+            if (items.length >= 20) break;
         }
 
-        handler.postMessage({ details: details });
+        handler.postMessage({ items: items });
         return 'birdz-reakcie-scraped';
     })();
     """#
