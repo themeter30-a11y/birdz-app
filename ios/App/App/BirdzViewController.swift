@@ -183,13 +183,6 @@ final class BirdzViewController: CAPBridgeViewController {
         pollTimer = nil
     }
 
-    private func startBackgroundPolling() {
-        backgroundPollTimer?.invalidate()
-        backgroundPollTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
-            self?.runScrape()
-        }
-    }
-
     private func runScrape() {
         guard let wv = webView else { return }
         DispatchQueue.main.async {
