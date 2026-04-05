@@ -6,7 +6,7 @@ import UserNotifications
 final class BirdzViewController: CAPBridgeViewController {
 
     private var pollTimer: Timer?
-    private var backgroundPollTimer: Timer?
+    
     private var lastBadgeCount: Int = -1
     private var lastSignatures = Set<String>()
     private var refreshControl: UIRefreshControl?
@@ -59,8 +59,7 @@ final class BirdzViewController: CAPBridgeViewController {
     }
 
     @objc private func handleAppWillResignActive() {
-        stopPolling()
-        startBackgroundPolling()
+        // Keep polling every 5 seconds even in background
     }
 
     private func registerLifecycleObservers() {
@@ -182,13 +181,6 @@ final class BirdzViewController: CAPBridgeViewController {
     private func stopPolling() {
         pollTimer?.invalidate()
         pollTimer = nil
-    }
-
-    private func startBackgroundPolling() {
-        backgroundPollTimer?.invalidate()
-        backgroundPollTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
-            self?.runScrape()
-        }
     }
 
     private func runScrape() {
