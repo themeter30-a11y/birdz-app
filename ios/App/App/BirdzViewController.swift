@@ -59,8 +59,7 @@ final class BirdzViewController: CAPBridgeViewController {
     }
 
     @objc private func handleAppWillResignActive() {
-        stopPolling()
-        startBackgroundPolling()
+        // Keep polling every 5 seconds even in background
     }
 
     private func registerLifecycleObservers() {
