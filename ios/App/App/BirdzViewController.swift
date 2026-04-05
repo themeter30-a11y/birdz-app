@@ -16,6 +16,9 @@ final class BirdzViewController: CAPBridgeViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
+        // Register as notification delegate so we can handle taps
+        UNUserNotificationCenter.current().delegate = self
+
         registerLifecycleObservers()
         requestNotificationPermission()
         configureWebViewIfNeeded()
@@ -150,6 +153,8 @@ final class BirdzViewController: CAPBridgeViewController {
         }
     }
 
+    // MARK: - Polling
+
     private func startPolling() {
         stopPolling()
 
@@ -170,6 +175,9 @@ final class BirdzViewController: CAPBridgeViewController {
     private func runScrape() {
         guard let wv = webView else { return }
         DispatchQueue.main.async {
+            // First reload the page silently to get fresh data
+            wv.evaluateJavaScript("void(0)", completionHandler: nil)
+            // Then run the scrape
             wv.evaluateJavaScript(BirdzScrapeJS.source) { _, error in
                 if let error = error {
                     print("BirdzViewController: JS error: \(error.localizedDescription)")
@@ -178,33 +186,39 @@ final class BirdzViewController: CAPBridgeViewController {
         }
     }
 
+    // MARK: - Process notification payload
+
     private func processPayload(_ payload: [String: Any]) {
         let totalCount = payload["totalCount"] as? Int ?? 0
         let details = payload["details"] as? [[String: Any]] ?? []
+        let sourceUrl = payload["sourceUrl"] as? String ?? "https://birdz.sk"
 
         DispatchQueue.main.async {
             UIApplication.shared.applicationIconBadgeNumber = totalCount
         }
 
+        // First run - just store state
         guard lastBadgeCount >= 0 else {
             lastBadgeCount = totalCount
             lastSignatures = Set(details.map { sig($0) })
             return
         }
 
+        // Badge increased - new notifications arrived
         if totalCount > lastBadgeCount {
-            let newCount = totalCount - lastBadgeCount
             let unseen = details.filter { !lastSignatures.contains(sig($0)) }
 
             if !unseen.isEmpty {
-                for detail in unseen.prefix(max(newCount, 1)) {
-                    sendDetailNotification(detail, badge: totalCount)
+                for detail in unseen {
+                    sendDetailNotification(detail, badge: totalCount, baseUrl: sourceUrl)
                 }
             } else {
+                let newCount = totalCount - lastBadgeCount
                 sendNotification(
                     title: "Birdz",
                     body: newCount == 1 ? "Máš novú notifikáciu" : "Máš \(newCount) nových notifikácií",
-                    badge: totalCount
+                    badge: totalCount,
+                    deepLink: "https://birdz.sk/notifikacie"
                 )
             }
         }
@@ -220,10 +234,11 @@ final class BirdzViewController: CAPBridgeViewController {
         return [type, sender, preview].joined(separator: "|")
     }
 
-    private func sendDetailNotification(_ detail: [String: Any], badge: Int) {
+    private func sendDetailNotification(_ detail: [String: Any], badge: Int, baseUrl: String) {
         let type = detail["type"] as? String ?? "Upozornenie"
         let sender = detail["sender"] as? String ?? ""
         let preview = detail["preview"] as? String ?? ""
+        let link = detail["link"] as? String ?? ""
 
         let body: String
         if !sender.isEmpty && !preview.isEmpty {
@@ -236,17 +251,30 @@ final class BirdzViewController: CAPBridgeViewController {
             body = "Máš novú notifikáciu"
         }
 
-        sendNotification(title: "Birdz – \(type)", body: body, badge: badge)
+        // Determine deep link based on notification type
+        var deepLink = "https://birdz.sk/notifikacie"
+        if !link.isEmpty {
+            if link.hasPrefix("http") {
+                deepLink = link
+            } else {
+                deepLink = "https://birdz.sk\(link.hasPrefix("/") ? "" : "/")\(link)"
+            }
+        } else if type.contains("správ") || type.contains("Tajn") {
+            deepLink = "https://birdz.sk/tajne-spravy"
+        }
+
+        sendNotification(title: "Birdz – \(type)", body: body, badge: badge, deepLink: deepLink)
     }
 
-    private func sendNotification(title: String, body: String, badge: Int) {
+    private func sendNotification(title: String, body: String, badge: Int, deepLink: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         content.badge = NSNumber(value: badge)
+        content.userInfo = ["deepLink": deepLink]
 
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
         let request = UNNotificationRequest(
             identifier: "birdz-\(UUID().uuidString)",
             content: content,
@@ -259,7 +287,18 @@ final class BirdzViewController: CAPBridgeViewController {
             }
         }
     }
+
+    // MARK: - Deep link navigation
+
+    private func navigateToURL(_ urlString: String) {
+        guard let wv = webView else { return }
+        DispatchQueue.main.async {
+            wv.evaluateJavaScript("window.location.href = '\(urlString)';", completionHandler: nil)
+        }
+    }
 }
+
+// MARK: - WKScriptMessageHandler
 
 extension BirdzViewController: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -270,57 +309,114 @@ extension BirdzViewController: WKScriptMessageHandler {
     }
 }
 
+// MARK: - UNUserNotificationCenterDelegate (handle notification taps)
+
+extension BirdzViewController: UNUserNotificationCenterDelegate {
+
+    // Show notification even when app is in foreground
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .badge])
+    }
+
+    // Handle notification tap - navigate to deep link
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        if let deepLink = userInfo["deepLink"] as? String {
+            navigateToURL(deepLink)
+        }
+        completionHandler()
+    }
+}
+
+// MARK: - JavaScript: WebView enhancements (viewport zoom + touch)
+
 private enum BirdzWebViewJS {
     static let source = #"""
     (function() {
-        window.__birdzApplyNativeEnhancements = window.__birdzApplyNativeEnhancements || function() {
-            function ensureViewport() {
+        function forceZoomableViewport() {
+            var meta = document.querySelector('meta[name="viewport"]');
+            if (!meta) {
                 var head = document.head || document.getElementsByTagName('head')[0];
-                var meta = document.querySelector('meta[name="viewport"]');
-
-                if (!meta) {
-                    if (!head) return;
-                    meta = document.createElement('meta');
-                    meta.name = 'viewport';
-                    head.appendChild(meta);
-                }
-
-                var next = [
-                    'width=device-width',
-                    'initial-scale=1.0',
-                    'maximum-scale=5.0',
-                    'user-scalable=yes',
-                    'viewport-fit=cover'
-                ].join(', ');
-
-                meta.setAttribute('content', next);
+                if (!head) return;
+                meta = document.createElement('meta');
+                meta.name = 'viewport';
+                head.appendChild(meta);
             }
-
-            function ensureTouchCallout() {
-                var head = document.head || document.getElementsByTagName('head')[0];
-                if (!head || document.getElementById('birdz-ios-webview-style')) return;
-
-                var style = document.createElement('style');
-                style.id = 'birdz-ios-webview-style';
-                style.textContent = [
-                    'html, body, a, img { -webkit-touch-callout: default !important; }',
-                    'a, img { -webkit-user-select: auto !important; user-select: auto !important; }'
-                ].join(' ');
-
-                head.appendChild(style);
+            var desired = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover';
+            if (meta.getAttribute('content') !== desired) {
+                meta.setAttribute('content', desired);
             }
+        }
 
-            ensureViewport();
+        function ensureTouchCallout() {
+            if (document.getElementById('birdz-ios-style')) return;
+            var head = document.head || document.getElementsByTagName('head')[0];
+            if (!head) return;
+            var style = document.createElement('style');
+            style.id = 'birdz-ios-style';
+            style.textContent = [
+                'html, body, a, img { -webkit-touch-callout: default !important; }',
+                'a, img { -webkit-user-select: auto !important; user-select: auto !important; }',
+                'body { -webkit-text-size-adjust: 100% !important; }'
+            ].join('\n');
+            head.appendChild(style);
+        }
+
+        function applyAll() {
+            forceZoomableViewport();
             ensureTouchCallout();
-        };
+        }
 
-        window.__birdzApplyNativeEnhancements();
-        document.addEventListener('DOMContentLoaded', window.__birdzApplyNativeEnhancements, false);
-        window.addEventListener('load', window.__birdzApplyNativeEnhancements, false);
-        return 'birdz-webview-enhancements-ready';
+        // Apply immediately
+        applyAll();
+
+        // Apply on DOM ready and load
+        document.addEventListener('DOMContentLoaded', applyAll, false);
+        window.addEventListener('load', applyAll, false);
+
+        // Watch for any script that tries to change the viewport back
+        if (window.MutationObserver) {
+            var observer = new MutationObserver(function(mutations) {
+                for (var i = 0; i < mutations.length; i++) {
+                    var m = mutations[i];
+                    if (m.type === 'attributes' && m.target.tagName === 'META' && m.target.name === 'viewport') {
+                        forceZoomableViewport();
+                    }
+                    if (m.type === 'childList') {
+                        var added = m.addedNodes;
+                        for (var j = 0; j < added.length; j++) {
+                            if (added[j].tagName === 'META' && added[j].name === 'viewport') {
+                                forceZoomableViewport();
+                            }
+                        }
+                    }
+                }
+            });
+
+            function startObserving() {
+                var head = document.head || document.getElementsByTagName('head')[0];
+                if (head) {
+                    observer.observe(head, { childList: true, attributes: true, subtree: true, attributeFilter: ['content'] });
+                }
+            }
+
+            startObserving();
+            document.addEventListener('DOMContentLoaded', startObserving, false);
+        }
+
+        // Also re-apply every 2 seconds as a safety net
+        setInterval(forceZoomableViewport, 2000);
+
+        return 'birdz-enhancements-v2';
     })();
     """#
 }
+
+// MARK: - JavaScript: Notification scraping
 
 private enum BirdzScrapeJS {
     static let source = #"""
@@ -342,21 +438,29 @@ private enum BirdzScrapeJS {
             if (v.indexOf('koment') > -1) return 'Komentár';
             if (v.indexOf('sleduj') > -1) return 'Nový sledovateľ';
             if (v.indexOf('označil') > -1 || v.indexOf('oznacil') > -1) return 'Označenie';
+            if (v.indexOf('blog') > -1) return 'Komentár k blogu';
+            if (v.indexOf('fotk') > -1 || v.indexOf('album') > -1) return 'Komentár k fotke';
             return 'Upozornenie';
         }
 
         function extractTotalCount(root) {
+            // Try common badge selectors
             var badges = root.querySelectorAll('.button-more .badge, .header_user_avatar .badge, .header .badge, .badge, [class*="notif"] .badge');
             for (var i = 0; i < badges.length; i++) {
                 var v = parseCount(badges[i].textContent);
                 if (v > 0) return v;
             }
+            // Fallback: look in header area
             var header = root.querySelector('header, .header, #header, nav');
             if (!header) return 0;
             var nodes = header.querySelectorAll('span, div, a, sup, strong, b');
             for (var j = 0; j < nodes.length; j++) {
-                var v = parseCount(nodes[j].textContent);
-                if (v > 0 && v < 1000) return v;
+                var el = nodes[j];
+                var text = trimText(el.textContent);
+                if (/^\d+$/.test(text)) {
+                    var v = parseInt(text, 10);
+                    if (v > 0 && v < 1000) return v;
+                }
             }
             return 0;
         }
@@ -366,7 +470,7 @@ private enum BirdzScrapeJS {
             for (var i = 0; i < selectors.length; i++) {
                 var el = container.querySelector(selectors[i]);
                 var text = trimText(el && el.textContent);
-                if (text && !/^\d+$/.test(text)) return text.slice(0, 220);
+                if (text && text.length > 3 && !/^\d+$/.test(text)) return text.slice(0, 220);
             }
             return trimText(container.textContent).slice(0, 220);
         }
@@ -376,9 +480,14 @@ private enum BirdzScrapeJS {
             for (var i = 0; i < selectors.length; i++) {
                 var el = container.querySelector(selectors[i]);
                 var text = trimText(el && el.textContent);
-                if (text && !/^\d+$/.test(text)) return text.slice(0, 80);
+                if (text && text.length > 1 && !/^\d+$/.test(text)) return text.slice(0, 80);
             }
             return '';
+        }
+
+        function pickLink(container) {
+            var a = container.querySelector('a[href]');
+            return a ? a.getAttribute('href') : '';
         }
 
         function extractDetails(root) {
@@ -387,8 +496,14 @@ private enum BirdzScrapeJS {
             for (var i = 0; i < containers.length; i++) {
                 var container = containers[i];
                 var fullText = trimText(container.textContent);
-                if (!fullText) continue;
-                var detail = { type: detectType(fullText), sender: pickSender(container), preview: pickPreview(container), count: 1 };
+                if (!fullText || fullText.length < 3) continue;
+                var detail = {
+                    type: detectType(fullText),
+                    sender: pickSender(container),
+                    preview: pickPreview(container),
+                    link: pickLink(container),
+                    count: 1
+                };
                 var signature = [detail.type, detail.sender, detail.preview].join('|');
                 if (seen[signature]) continue;
                 seen[signature] = true;
