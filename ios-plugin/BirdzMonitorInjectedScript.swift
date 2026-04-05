@@ -1,7 +1,7 @@
 import Foundation
 
 enum BirdzMonitorInjectedScript {
-    static let source = """
+    static let source = #"""
     (function() {
         var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.birdzNotificationMonitor;
         if (!handler) return 'birdz-handler-missing';
@@ -24,7 +24,7 @@ enum BirdzMonitorInjectedScript {
             if (!document.head) return;
 
             var viewport = document.querySelector('meta[name="viewport"]');
-            var content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';
+            var content = 'width=device-width, initial-scale=1.0, viewport-fit=auto';
 
             if (!viewport) {
                 viewport = document.createElement('meta');
@@ -61,6 +61,7 @@ enum BirdzMonitorInjectedScript {
                 }
 
                 header,
+                nav,
                 .header,
                 #header,
                 .header-main,
@@ -337,5 +338,5 @@ enum BirdzMonitorInjectedScript {
 
         return 'birdz-monitor-ran';
     })();
-    """
+    """#
 }

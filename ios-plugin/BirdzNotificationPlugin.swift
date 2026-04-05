@@ -16,6 +16,10 @@ final class BirdzNotificationMonitor: NSObject {
     func startMonitoring(webView: WKWebView) {
         self.webView = webView
 
+        DispatchQueue.main.async { [weak self] in
+            self?.applySafeAreaInset()
+        }
+
         configureMessageBridge(for: webView)
         requestNotificationPermissionIfNeeded()
 
@@ -27,6 +31,7 @@ final class BirdzNotificationMonitor: NSObject {
         runMonitor()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.applySafeAreaInset()
             self?.runMonitor()
         }
     }
@@ -62,12 +67,38 @@ final class BirdzNotificationMonitor: NSObject {
     private func runMonitor() {
         guard let webView else { return }
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            self?.applySafeAreaInset()
             webView.evaluateJavaScript(BirdzMonitorInjectedScript.source) { _, error in
                 if let error {
                     print("BirdzMonitor: JS inject error: \(error.localizedDescription)")
                 }
             }
+        }
+    }
+
+    private func applySafeAreaInset() {
+        guard let webView else { return }
+
+        let topInset = webView.safeAreaInsets.top
+        guard topInset > 0 else { return }
+
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+
+        var contentInset = webView.scrollView.contentInset
+        if abs(contentInset.top - topInset) > 0.5 {
+            contentInset.top = topInset
+            webView.scrollView.contentInset = contentInset
+        }
+
+        var indicatorInset = webView.scrollView.scrollIndicatorInsets
+        if abs(indicatorInset.top - topInset) > 0.5 {
+            indicatorInset.top = topInset
+            webView.scrollView.scrollIndicatorInsets = indicatorInset
+        }
+
+        if webView.scrollView.contentOffset.y > -topInset {
+            webView.scrollView.setContentOffset(CGPoint(x: 0, y: -topInset), animated: false)
         }
     }
 
