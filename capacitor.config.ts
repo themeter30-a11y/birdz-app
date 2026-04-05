@@ -10,7 +10,7 @@ const config: CapacitorConfig = {
     allowNavigation: ['birdz.sk', '*.birdz.sk', '*.google.com', '*.googleapis.com', '*.gstatic.com']
   },
   ios: {
-    allowsLinkPreview: false,
+    allowsLinkPreview: true,
     scrollEnabled: true,
     preferredContentMode: 'mobile'
   }

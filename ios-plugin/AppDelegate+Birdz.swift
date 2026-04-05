@@ -4,6 +4,7 @@ import Capacitor
 extension AppDelegate {
     
     func setupBirdzMonitoring() {
+        // Start when app becomes active (also handles returning from background)
         NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil,
@@ -12,10 +13,13 @@ extension AppDelegate {
             self?.startBirdzMonitoringIfPossible()
         }
 
+        // Handle foreground notifications (show even when app is open)
+        UNUserNotificationCenter.current().delegate = self as? UNUserNotificationCenterDelegate
+
         startBirdzMonitoringIfPossible(after: 1.0)
     }
 
-    private func startBirdzMonitoringIfPossible(after delay: TimeInterval = 0.0, retries: Int = 8) {
+    private func startBirdzMonitoringIfPossible(after delay: TimeInterval = 0.0, retries: Int = 10) {
         let start = { [weak self] in
             guard let self = self else { return }
 
@@ -28,7 +32,7 @@ extension AppDelegate {
             }
 
             BirdzNotificationMonitor.shared.startMonitoring(webView: webView)
-            print("BirdzMonitor: Started – hard refresh every 5s")
+            print("BirdzMonitor: Started – polling every 5s, Safari behaviors enabled")
         }
 
         if delay > 0 {
