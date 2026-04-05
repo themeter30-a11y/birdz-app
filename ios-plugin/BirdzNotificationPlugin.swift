@@ -9,130 +9,25 @@ class BirdzNotificationMonitor: NSObject {
     
     private var webView: WKWebView?
     private var timer: Timer?
-    private var lastBadgeCount: Int = -1  // Start at -1 so first check always updates
+    private var lastBadgeCount: Int = -1
     private var lastNotificationDetails: [String: Int] = [:]
     
-    // JavaScript that monitors the notification badge on birdz.sk
-    // Uses MutationObserver for instant detection + polling fallback
-    private let setupObserverScript = """
-    (function() {
-        if (window._birdzObserverActive) return 'already_active';
-        window._birdzObserverActive = true;
-        window._birdzLastCount = -1;
-        
-        function checkBadge() {
-            var result = { totalCount: 0, details: [] };
-            
-            // Strategy 1: Look for badge elements with common selectors
-            var selectors = [
-                '.button-more .badge',
-                '.header_user_avatar .badge', 
-                'a.button-more span',
-                '.badge',
-                '[class*="notif"] .badge',
-                '.header .badge'
-            ];
-            
-            for (var s = 0; s < selectors.length; s++) {
-                var els = document.querySelectorAll(selectors[s]);
-                for (var i = 0; i < els.length; i++) {
-                    var text = els[i].textContent.trim();
-                    if (/^\\d+$/.test(text) && parseInt(text) > 0) {
-                        result.totalCount = parseInt(text);
-                        break;
-                    }
-                }
-                if (result.totalCount > 0) break;
-            }
-            
-            // Strategy 2: Scan header for any small red/colored element with a number
-            if (result.totalCount === 0) {
-                var header = document.querySelector('header, .header, #header, .header-main, nav');
-                if (header) {
-                    var allEls = header.querySelectorAll('span, div, a, sup, b, strong, em, i');
-                    for (var j = 0; j < allEls.length; j++) {
-                        var el = allEls[j];
-                        var txt = el.textContent.trim();
-                        if (/^\\d+$/.test(txt) && parseInt(txt) > 0 && parseInt(txt) < 1000) {
-                            var rect = el.getBoundingClientRect();
-                            if (rect.width > 0 && rect.width < 50 && rect.height < 50) {
-                                var style = window.getComputedStyle(el);
-                                var bg = style.backgroundColor;
-                                var borderRadius = parseFloat(style.borderRadius);
-                                // Red-ish background or round shape = likely a badge
-                                if (bg.indexOf('rgb') > -1 && bg !== 'rgba(0, 0, 0, 0)' || borderRadius > 5) {
-                                    result.totalCount = parseInt(txt);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Try to get notification type details
-            var menuItems = document.querySelectorAll('li, .menu-item, [class*="notif"] a, [class*="menu"] a');
-            for (var k = 0; k < menuItems.length; k++) {
-                var item = menuItems[k];
-                var itemText = item.textContent || '';
-                var itemBadge = item.querySelector('.badge, [class*="count"], [class*="num"]');
-                
-                if (itemText.indexOf('Tajn') > -1 || itemText.indexOf('správ') > -1 || itemText.indexOf('Správ') > -1) {
-                    var count = 0;
-                    if (itemBadge) count = parseInt(itemBadge.textContent.trim()) || 0;
-                    else {
-                        var match = itemText.match(/(\\d+)/);
-                        if (match) count = parseInt(match[1]);
-                    }
-                    if (count > 0) result.details.push({ type: 'Tajná správa', count: count });
-                }
-                if (itemText.indexOf('Reakci') > -1 || itemText.indexOf('reakci') > -1) {
-                    var rCount = 0;
-                    if (itemBadge) rCount = parseInt(itemBadge.textContent.trim()) || 0;
-                    else {
-                        var rMatch = itemText.match(/(\\d+)/);
-                        if (rMatch) rCount = parseInt(rMatch[1]);
-                    }
-                    if (rCount > 0) result.details.push({ type: 'Reakcia', count: rCount });
-                }
-            }
-            
-            // Notify native side if count changed
-            if (result.totalCount !== window._birdzLastCount) {
-                window._birdzLastCount = result.totalCount;
-                try {
-                    window.webkit.messageHandlers.birdzBadge.postMessage(JSON.stringify(result));
-                } catch(e) {}
-            }
-            
-            return JSON.stringify(result);
-        }
-        
-        // Set up MutationObserver for instant detection
-        var observer = new MutationObserver(function() {
-            checkBadge();
-        });
-        observer.observe(document.body, { 
-            childList: true, 
-            subtree: true, 
-            characterData: true,
-            attributes: true,
-            attributeFilter: ['class', 'style']
-        });
-        
-        // Also poll every 10 seconds as fallback
-        setInterval(checkBadge, 10000);
-        
-        // Initial check
-        return checkBadge();
-    })();
-    """;
-    
-    // Simple poll script for timer-based checking
-    private let pollScript = """
+    // JavaScript that scrapes notification details including message previews
+    // Runs every 5 seconds for reliable detection
+    private let scrapeScript = """
     (function() {
         var result = { totalCount: 0, details: [] };
-        var selectors = ['.button-more .badge', '.header_user_avatar .badge', 'a.button-more span', '.badge', '[class*="notif"] .badge', '.header .badge'];
+        
+        // 1. Get total badge count from header
+        var selectors = [
+            '.button-more .badge',
+            '.header_user_avatar .badge',
+            'a.button-more span',
+            '.badge',
+            '[class*="notif"] .badge',
+            '.header .badge'
+        ];
+        
         for (var s = 0; s < selectors.length; s++) {
             var els = document.querySelectorAll(selectors[s]);
             for (var i = 0; i < els.length; i++) {
@@ -144,6 +39,8 @@ class BirdzNotificationMonitor: NSObject {
             }
             if (result.totalCount > 0) break;
         }
+        
+        // Fallback: scan header for any small badge-like element
         if (result.totalCount === 0) {
             var header = document.querySelector('header, .header, #header, .header-main, nav');
             if (header) {
@@ -154,29 +51,92 @@ class BirdzNotificationMonitor: NSObject {
                     if (/^\\d+$/.test(txt) && parseInt(txt) > 0 && parseInt(txt) < 1000) {
                         var rect = el.getBoundingClientRect();
                         if (rect.width > 0 && rect.width < 50 && rect.height < 50) {
-                            result.totalCount = parseInt(txt);
-                            break;
+                            var style = window.getComputedStyle(el);
+                            var bg = style.backgroundColor;
+                            var borderRadius = parseFloat(style.borderRadius);
+                            if ((bg.indexOf('rgb') > -1 && bg !== 'rgba(0, 0, 0, 0)') || borderRadius > 5) {
+                                result.totalCount = parseInt(txt);
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
-        var menuItems = document.querySelectorAll('li, .menu-item');
-        for (var k = 0; k < menuItems.length; k++) {
-            var item = menuItems[k];
-            var itemText = item.textContent || '';
-            var itemBadge = item.querySelector('.badge, [class*="count"]');
-            if (itemText.indexOf('Tajn') > -1 || itemText.indexOf('správ') > -1) {
-                var c = 0;
-                if (itemBadge) c = parseInt(itemBadge.textContent.trim()) || 0;
-                if (c > 0) result.details.push({ type: 'Tajná správa', count: c });
+        
+        // 2. Try to extract detailed notification info with previews
+        // Look for notification list items (when dropdown/menu is open or in notification page)
+        var notifContainers = document.querySelectorAll(
+            '.notifications-list li, .notification-item, [class*="notif"] li, ' +
+            '.dropdown-menu li, .menu-dropdown li, [class*="dropdown"] li, ' +
+            '.list-group-item, [class*="notification"]'
+        );
+        
+        for (var n = 0; n < notifContainers.length; n++) {
+            var container = notifContainers[n];
+            var fullText = container.textContent || '';
+            
+            // Try to find sender name (usually bold or in a link)
+            var senderEl = container.querySelector('strong, b, .username, [class*="user"], [class*="name"], a[href*="profil"]');
+            var sender = senderEl ? senderEl.textContent.trim() : '';
+            
+            // Try to find the message/preview text
+            var previewEl = container.querySelector('p, .text, .message, [class*="text"], [class*="preview"], [class*="body"], .description, em, span:not(.badge)');
+            var preview = previewEl ? previewEl.textContent.trim() : '';
+            
+            // Determine notification type
+            var type = 'Upozornenie';
+            if (fullText.indexOf('Tajn') > -1 || fullText.indexOf('správ') > -1 || fullText.indexOf('Správ') > -1) {
+                type = 'Tajná správa';
+            } else if (fullText.indexOf('Reakci') > -1 || fullText.indexOf('reakci') > -1) {
+                type = 'Reakcia na status';
+            } else if (fullText.indexOf('koment') > -1 || fullText.indexOf('Koment') > -1) {
+                type = 'Komentár';
+            } else if (fullText.indexOf('sleduj') > -1 || fullText.indexOf('Sleduj') > -1) {
+                type = 'Nový sledovateľ';
+            } else if (fullText.indexOf('označil') > -1 || fullText.indexOf('Označil') > -1) {
+                type = 'Označenie';
             }
-            if (itemText.indexOf('Reakci') > -1) {
-                var r = 0;
-                if (itemBadge) r = parseInt(itemBadge.textContent.trim()) || 0;
-                if (r > 0) result.details.push({ type: 'Reakcia', count: r });
+            
+            if (sender || preview) {
+                result.details.push({
+                    type: type,
+                    sender: sender,
+                    preview: preview.substring(0, 200),
+                    count: 1
+                });
             }
         }
+        
+        // 3. Fallback: scan menu items for notification counts by type
+        if (result.details.length === 0 && result.totalCount > 0) {
+            var menuItems = document.querySelectorAll('li, .menu-item, [class*="notif"] a, [class*="menu"] a');
+            for (var k = 0; k < menuItems.length; k++) {
+                var item = menuItems[k];
+                var itemText = item.textContent || '';
+                var itemBadge = item.querySelector('.badge, [class*="count"], [class*="num"]');
+                
+                if (itemText.indexOf('Tajn') > -1 || itemText.indexOf('správ') > -1 || itemText.indexOf('Správ') > -1) {
+                    var c = 0;
+                    if (itemBadge) c = parseInt(itemBadge.textContent.trim()) || 0;
+                    else {
+                        var match = itemText.match(/(\\d+)/);
+                        if (match) c = parseInt(match[1]);
+                    }
+                    if (c > 0) result.details.push({ type: 'Tajná správa', sender: '', preview: '', count: c });
+                }
+                if (itemText.indexOf('Reakci') > -1 || itemText.indexOf('reakci') > -1) {
+                    var r = 0;
+                    if (itemBadge) r = parseInt(itemBadge.textContent.trim()) || 0;
+                    else {
+                        var rMatch = itemText.match(/(\\d+)/);
+                        if (rMatch) r = parseInt(rMatch[1]);
+                    }
+                    if (r > 0) result.details.push({ type: 'Reakcia na status', sender: '', preview: '', count: r });
+                }
+            }
+        }
+        
         return JSON.stringify(result);
     })();
     """;
@@ -193,57 +153,31 @@ class BirdzNotificationMonitor: NSObject {
             }
         }
         
-        // Register message handler for MutationObserver callbacks
-        webView.configuration.userContentController.add(self, name: "birdzBadge")
-        
-        // Set up the MutationObserver after page loads
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-            self?.setupObserver()
-        }
-        
-        // Also poll every 15 seconds as backup
-        timer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+        // Poll every 5 seconds for reliable, fast detection
+        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.checkForNotifications()
         }
         
-        // Re-setup observer when page navigates
-        webView.addObserver(self, forKeyPath: "URL", options: .new, context: nil)
-    }
-    
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
-        if keyPath == "URL" {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                self?.setupObserver()
-            }
+        // Initial check after page loads
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.checkForNotifications()
         }
     }
     
     func stopMonitoring() {
         timer?.invalidate()
         timer = nil
-        webView?.removeObserver(self, forKeyPath: "URL")
-    }
-    
-    private func setupObserver() {
-        guard let webView = webView else { return }
-        DispatchQueue.main.async {
-            webView.evaluateJavaScript(self.setupObserverScript) { [weak self] result, error in
-                if let jsonString = result as? String, jsonString != "already_active" {
-                    self?.processResult(jsonString: jsonString)
-                }
-                if let error = error {
-                    print("BirdzMonitor: Observer setup error: \(error)")
-                }
-            }
-        }
     }
     
     private func checkForNotifications() {
         guard let webView = webView else { return }
         DispatchQueue.main.async {
-            webView.evaluateJavaScript(self.pollScript) { [weak self] result, error in
+            webView.evaluateJavaScript(self.scrapeScript) { [weak self] result, error in
                 if let jsonString = result as? String {
                     self?.processResult(jsonString: jsonString)
+                }
+                if let error = error {
+                    print("BirdzMonitor: JS error: \(error.localizedDescription)")
                 }
             }
         }
@@ -258,39 +192,57 @@ class BirdzNotificationMonitor: NSObject {
         
         let details = json["details"] as? [[String: Any]] ?? []
         
-        // Always update app badge
+        // Always update app badge icon
         DispatchQueue.main.async {
             UIApplication.shared.applicationIconBadgeNumber = totalCount
         }
         
-        print("BirdzMonitor: Badge count = \(totalCount), last = \(self.lastBadgeCount)")
+        print("BirdzMonitor: Badge = \(totalCount), previous = \(self.lastBadgeCount)")
         
-        // Check if count increased (new notification arrived)
+        // Send notification if count increased
         if totalCount > self.lastBadgeCount && self.lastBadgeCount >= 0 {
-            if details.isEmpty {
-                self.sendNotification(
-                    title: "Birdz",
-                    body: "Máš \(totalCount) neprečítaných notifikácií",
-                    badge: totalCount
-                )
-            } else {
+            let newNotifs = totalCount - self.lastBadgeCount
+            
+            if !details.isEmpty {
+                // Send detailed notifications
                 for detail in details {
-                    if let type = detail["type"] as? String,
-                       let count = detail["count"] as? Int,
-                       count > 0 {
-                        let previousCount = self.lastNotificationDetails[type] ?? 0
-                        if count > previousCount {
-                            let newCount = count - previousCount
-                            self.sendNotification(
-                                title: "Birdz - \(type)",
-                                body: newCount == 1
-                                    ? "Máš novú: \(type)"
-                                    : "Máš \(newCount) nových: \(type)",
-                                badge: totalCount
-                            )
+                    let type = detail["type"] as? String ?? "Upozornenie"
+                    let sender = detail["sender"] as? String ?? ""
+                    let preview = detail["preview"] as? String ?? ""
+                    let count = detail["count"] as? Int ?? 1
+                    
+                    let previousCount = self.lastNotificationDetails[type] ?? 0
+                    if count > previousCount {
+                        var body = ""
+                        if !sender.isEmpty && !preview.isEmpty {
+                            body = "\(sender): \(preview)"
+                        } else if !sender.isEmpty {
+                            body = "Od: \(sender)"
+                        } else if !preview.isEmpty {
+                            body = preview
+                        } else {
+                            let diff = count - previousCount
+                            body = diff == 1
+                                ? "Máš novú notifikáciu: \(type)"
+                                : "Máš \(diff) nových: \(type)"
                         }
+                        
+                        self.sendNotification(
+                            title: "Birdz – \(type)",
+                            body: body,
+                            badge: totalCount
+                        )
                     }
                 }
+            } else {
+                // Generic notification
+                self.sendNotification(
+                    title: "Birdz",
+                    body: newNotifs == 1
+                        ? "Máš novú notifikáciu"
+                        : "Máš \(newNotifs) nových notifikácií",
+                    badge: totalCount
+                )
             }
         }
         
@@ -322,20 +274,10 @@ class BirdzNotificationMonitor: NSObject {
         
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("BirdzMonitor: Error sending notification: \(error)")
+                print("BirdzMonitor: Notification error: \(error)")
             } else {
-                print("BirdzMonitor: Notification sent - \(title): \(body)")
+                print("BirdzMonitor: Sent – \(title): \(body)")
             }
-        }
-    }
-}
-
-// MARK: - WKScriptMessageHandler for MutationObserver callbacks
-extension BirdzNotificationMonitor: WKScriptMessageHandler {
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "birdzBadge", let jsonString = message.body as? String {
-            print("BirdzMonitor: MutationObserver detected change")
-            processResult(jsonString: jsonString)
         }
     }
 }
