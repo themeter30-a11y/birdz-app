@@ -476,7 +476,7 @@ private enum BirdzReakcieScrapeJS {
         var rawText = trimText(document.body ? document.body.innerText : '');
         var contentHash = simpleHash(rawText);
 
-        // Also extract top items for notification detail
+        // Extract detailed items with author, target, time
         var items = [];
         var elements = document.querySelectorAll('li, .item, .notification-item, [class*="reakci"], [class*="notif"], tr, .row');
         for (var i = 0; i < elements.length; i++) {
@@ -487,16 +487,33 @@ private enum BirdzReakcieScrapeJS {
             var timeEl = el.querySelector('time, .time, .date, [class*="time"], [class*="date"], small');
             var time = timeEl ? trimText(timeEl.textContent) : '';
 
+            // Try to extract author (usually a link or bold text at start)
+            var authorEl = el.querySelector('a[href*="/profil/"], a[href*="/uzivatel/"], a[href*="/user/"], strong, b');
+            var author = authorEl ? trimText(authorEl.textContent) : '';
+
+            // Try to extract target content (second link, or topic/status reference)
+            var allLinks = el.querySelectorAll('a');
+            var target = '';
+            for (var j = 0; j < allLinks.length; j++) {
+                var linkText = trimText(allLinks[j].textContent);
+                if (linkText && linkText !== author && linkText.length > 3) {
+                    target = linkText.slice(0, 100);
+                    break;
+                }
+            }
+
             items.push({
                 type: detectType(text),
-                text: text.slice(0, 200),
+                text: text.slice(0, 300),
+                author: author.slice(0, 50),
+                target: target,
                 time: time
             });
 
             if (items.length >= 20) break;
         }
 
-        handler.postMessage({ contentHash: contentHash, items: items, rawText: rawText.slice(0, 500) });
+        handler.postMessage({ contentHash: contentHash, items: items, totalCount: items.length, rawText: rawText.slice(0, 500) });
         return 'birdz-reakcie-scraped';
     })();
     """#
