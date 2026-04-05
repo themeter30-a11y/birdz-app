@@ -67,20 +67,26 @@ func application(_ application: UIApplication, didFinishLaunchingWithOptions lau
 }
 ```
 
-## Krok 7: Nastav podpisovanie (Signing)
+## Krok 7: Nastav ikonu appky (Birdz logo)
+1. V Xcode klikni na **Assets.xcassets** v ľavom paneli
+2. Klikni na **AppIcon**
+3. Otvor Finder a nájdi súbor `public/app-icon.png` v priečinku projektu
+4. Pretiahni ho na **všetky** sloty v AppIcon (alebo použij nástroj ako https://www.appicon.co/ na vygenerovanie všetkých veľkostí)
+
+## Krok 8: Nastav podpisovanie (Signing)
 1. V Xcode klikni na **App** v ľavom paneli (hore, modrá ikona)
 2. Prejdi na záložku **Signing & Capabilities**
 3. Zaškrtni **Automatically manage signing**
 4. V **Team** vyber svoj Apple ID
 5. Ak nemáš Team, klikni **Add Account** a prihlás sa svojím Apple ID
 
-## Krok 8: Pridaj Push Notifications capability
+## Krok 9: Pridaj Push Notifications capability
 1. V rovnakej záložke **Signing & Capabilities**
 2. Klikni **+ Capability**
 3. Nájdi a pridaj **Push Notifications**
 4. Nájdi a pridaj **Background Modes** → zaškrtni **Background fetch**
 
-## Krok 9: Spusti na iPhone
+## Krok 10: Spusti na iPhone
 1. Pripoj iPhone cez kábel k Macbooku
 2. Na iPhone potvŕď **"Dôverovať tomuto počítaču"**
 3. V Xcode hore vyber svoj iPhone z dropdown menu (vedľa "App")
@@ -93,9 +99,16 @@ Na iPhone choď do **Nastavenia → Všeobecné → VPN a správa zariadení** �
 ## Hotovo! 🎉
 
 Appka by sa mala otvoriť na tvojom iPhone s birdz.sk na fullscreen.
-- Každých 30 sekúnd kontroluje nové notifikácie
-- Keď príde nová notifikácia, pošle ti iOS upozornenie
-- Badge na ikone appky ukazuje počet neprečítaných
+
+### Čo funguje:
+- ✅ **Safe area** – obsah začína pod stavovým riadkom
+- ✅ **Pinch-to-zoom** – zoomovanie obsahu ako v Safari
+- ✅ **Swipe späť** – gesto na návrat na predchádzajúcu stránku
+- ✅ **Pull-to-refresh** – potiahni nadol na obnovenie stránky
+- ✅ **Dlhý stisk** – na obrázkoch ponúkne uloženie, na linkoch náhľad
+- ✅ **Badge** – počet notifikácií na ikone appky
+- ✅ **iOS notifikácie** – s typom (TS, reakcia, komentár) a náhľadom textu
+- ✅ **5-sekundový polling** – automatický refresh notifikácií
 
 ## Riešenie problémov
 
