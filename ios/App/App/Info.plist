@@ -24,6 +24,14 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Birdz potrebuje kameru pre pridávanie fotiek a videí.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Birdz potrebuje mikrofón pre nahrávanie videí a hlasu.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Birdz potrebuje povolenie uložiť fotky do tvojej galérie.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Birdz potrebuje prístup k fotkám pre nahrávanie a ukladanie obrázkov.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
