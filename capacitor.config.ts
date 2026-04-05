@@ -6,11 +6,13 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   server: {
     url: 'https://birdz.sk',
-    cleartext: true
+    cleartext: true,
+    allowNavigation: ['birdz.sk', '*.birdz.sk', '*.google.com', '*.googleapis.com', '*.gstatic.com']
   },
   ios: {
     allowsLinkPreview: false,
     scrollEnabled: true,
+    preferredContentMode: 'mobile'
   }
 };
 
