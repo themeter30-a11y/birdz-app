@@ -3,6 +3,8 @@ import UIKit
 import UserNotifications
 import WebKit
 
+// MARK: - JavaScript scraping payload
+
 private enum BirdzNotificationScrapeScript {
     static let source = #"""
     (function() {
@@ -283,6 +285,8 @@ private enum BirdzNotificationScrapeScript {
     """#
 }
 
+// MARK: - Main monitor
+
 final class BirdzNotificationMonitor: NSObject {
     static let shared = BirdzNotificationMonitor()
 
@@ -292,13 +296,14 @@ final class BirdzNotificationMonitor: NSObject {
     private var timer: Timer?
     private var lastBadgeCount: Int = -1
     private var lastNotificationSignatures = Set<String>()
-    private var hasPinnedWebViewToSafeArea = false
+    private var refreshControl: UIRefreshControl?
 
     func startMonitoring(webView: WKWebView) {
         self.webView = webView
 
         DispatchQueue.main.async { [weak self] in
-            self?.pinWebViewToSafeArea()
+            self?.configureSafariBehaviors()
+            self?.setupPullToRefresh()
         }
 
         configureMessageBridge(for: webView)
@@ -311,8 +316,8 @@ final class BirdzNotificationMonitor: NSObject {
 
         runMonitor()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.pinWebViewToSafeArea()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.configureSafariBehaviors()
             self?.runMonitor()
         }
     }
@@ -323,8 +328,78 @@ final class BirdzNotificationMonitor: NSObject {
 
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: messageHandlerName)
         webView = nil
-        hasPinnedWebViewToSafeArea = false
     }
+
+    // MARK: - Safari-like behaviors
+
+    private func configureSafariBehaviors() {
+        guard let webView else { return }
+
+        // 1. Safe area: content starts below status bar
+        webView.scrollView.contentInsetAdjustmentBehavior = .always
+
+        // 2. Pinch-to-zoom
+        webView.scrollView.minimumZoomScale = 1.0
+        webView.scrollView.maximumZoomScale = 5.0
+        webView.scrollView.bouncesZoom = true
+
+        // Remove the viewport meta that disables zoom – inject JS to allow it
+        let enableZoom = """
+        (function() {
+            var meta = document.querySelector('meta[name="viewport"]');
+            if (meta) {
+                var content = meta.getAttribute('content') || '';
+                content = content.replace(/user-scalable\\s*=\\s*no/gi, 'user-scalable=yes');
+                content = content.replace(/maximum-scale\\s*=\\s*[\\d.]+/gi, 'maximum-scale=5.0');
+                meta.setAttribute('content', content);
+            }
+        })();
+        """
+        webView.evaluateJavaScript(enableZoom, completionHandler: nil)
+
+        // 3. Allow link previews (long-press on links)
+        webView.allowsLinkPreview = true
+
+        // 4. Allow back/forward swipe gestures
+        webView.allowsBackForwardNavigationGestures = true
+
+        // 5. Bouncy scroll like Safari
+        webView.scrollView.bounces = true
+        webView.scrollView.alwaysBounceVertical = true
+
+        print("BirdzMonitor: Safari behaviors configured")
+    }
+
+    // MARK: - Pull to refresh
+
+    private func setupPullToRefresh() {
+        guard let webView else { return }
+
+        if refreshControl != nil { return }
+
+        let rc = UIRefreshControl()
+        rc.tintColor = UIColor.systemRed
+        rc.addTarget(self, action: #selector(handlePullToRefresh), for: .valueChanged)
+        webView.scrollView.addSubview(rc)
+        refreshControl = rc
+
+        print("BirdzMonitor: Pull-to-refresh enabled")
+    }
+
+    @objc private func handlePullToRefresh() {
+        guard let webView else {
+            refreshControl?.endRefreshing()
+            return
+        }
+
+        webView.reload()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.refreshControl?.endRefreshing()
+        }
+    }
+
+    // MARK: - Message bridge
 
     private func configureMessageBridge(for webView: WKWebView) {
         let controller = webView.configuration.userContentController
@@ -332,64 +407,35 @@ final class BirdzNotificationMonitor: NSObject {
         controller.add(self, name: messageHandlerName)
     }
 
+    // MARK: - Notification permission
+
     private func requestNotificationPermissionIfNeeded() {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
-            guard settings.authorizationStatus == .notDetermined else { return }
-
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
-                if granted {
-                    print("BirdzMonitor: Notification permission granted")
-                } else {
-                    print("BirdzMonitor: Notification permission denied: \(String(describing: error))")
+            if settings.authorizationStatus == .notDetermined {
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+                    print("BirdzMonitor: Notification permission: \(granted), error: \(String(describing: error))")
                 }
+            } else if settings.authorizationStatus == .denied {
+                print("BirdzMonitor: Notifications denied in Settings – user must enable manually")
             }
         }
     }
+
+    // MARK: - Polling
 
     private func runMonitor() {
         guard let webView else { return }
 
-        DispatchQueue.main.async { [weak self] in
-            self?.pinWebViewToSafeArea()
+        DispatchQueue.main.async {
             webView.evaluateJavaScript(BirdzNotificationScrapeScript.source) { _, error in
                 if let error {
-                    print("BirdzMonitor: JS inject error: \(error.localizedDescription)")
+                    print("BirdzMonitor: JS error: \(error.localizedDescription)")
                 }
             }
         }
     }
 
-    private func pinWebViewToSafeArea() {
-        guard let webView, let containerView = webView.superview else { return }
-
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
-
-        if !hasPinnedWebViewToSafeArea {
-            let constraintsToRemove = containerView.constraints.filter {
-                ($0.firstItem as AnyObject?) === webView || ($0.secondItem as AnyObject?) === webView
-            }
-            NSLayoutConstraint.deactivate(constraintsToRemove)
-
-            webView.translatesAutoresizingMaskIntoConstraints = false
-            webView.autoresizingMask = []
-
-            NSLayoutConstraint.activate([
-                webView.topAnchor.constraint(equalTo: containerView.safeAreaLayoutGuide.topAnchor),
-                webView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-                webView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-                webView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
-            ])
-
-            hasPinnedWebViewToSafeArea = true
-        }
-
-        containerView.setNeedsLayout()
-        containerView.layoutIfNeeded()
-
-        if webView.scrollView.contentOffset.y < 0 {
-            webView.scrollView.setContentOffset(.zero, animated: false)
-        }
-    }
+    // MARK: - Process scraped data
 
     private func processPayload(_ payload: [String: Any]) {
         let totalCount = payload["totalCount"] as? Int ?? 0
@@ -399,7 +445,7 @@ final class BirdzNotificationMonitor: NSObject {
             UIApplication.shared.applicationIconBadgeNumber = totalCount
         }
 
-        print("BirdzMonitor: Badge = \(totalCount), previous = \(lastBadgeCount), details = \(details.count)")
+        print("BirdzMonitor: Badge=\(totalCount) prev=\(lastBadgeCount) details=\(details.count)")
 
         guard lastBadgeCount >= 0 else {
             lastBadgeCount = totalCount
@@ -408,19 +454,19 @@ final class BirdzNotificationMonitor: NSObject {
         }
 
         if totalCount > lastBadgeCount {
-            let newNotifications = totalCount - lastBadgeCount
+            let newCount = totalCount - lastBadgeCount
             let unseenDetails = details.filter { !lastNotificationSignatures.contains(signature(for: $0)) }
 
             if !unseenDetails.isEmpty {
-                for detail in unseenDetails.prefix(max(newNotifications, 1)) {
+                for detail in unseenDetails.prefix(max(newCount, 1)) {
                     sendDetailedNotification(detail, badge: totalCount)
                 }
             } else {
                 sendNotification(
                     title: "Birdz",
-                    body: newNotifications == 1
+                    body: newCount == 1
                         ? "Máš novú notifikáciu"
-                        : "Máš \(newNotifications) nových notifikácií",
+                        : "Máš \(newCount) nových notifikácií",
                     badge: totalCount
                 )
             }
@@ -434,9 +480,10 @@ final class BirdzNotificationMonitor: NSObject {
         let type = detail["type"] as? String ?? ""
         let sender = detail["sender"] as? String ?? ""
         let preview = detail["preview"] as? String ?? ""
-
         return [type, sender, preview].joined(separator: "|")
     }
+
+    // MARK: - Send iOS notifications
 
     private func sendDetailedNotification(_ detail: [String: Any], badge: Int) {
         let type = detail["type"] as? String ?? "Upozornenie"
@@ -484,6 +531,8 @@ final class BirdzNotificationMonitor: NSObject {
         }
     }
 }
+
+// MARK: - WKScriptMessageHandler
 
 extension BirdzNotificationMonitor: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
