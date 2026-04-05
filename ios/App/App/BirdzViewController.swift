@@ -257,13 +257,28 @@ final class BirdzViewController: CAPBridgeViewController {
 
     // MARK: - iOS Notifications
 
-    private func sendNotification(title: String, body: String, badge: Int) {
+    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int) {
         let content = UNMutableNotificationContent()
         content.title = title
+        if !subtitle.isEmpty { content.subtitle = subtitle }
         content.body = body
         content.sound = .default
         content.badge = NSNumber(value: badge)
         content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
+
+        // Attach Birdz icon to the notification
+        if let iconURL = Bundle.main.url(forResource: "birdz_notification", withExtension: "png") {
+            do {
+                let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+                let tmpFile = tmpDir.appendingPathComponent("birdz_notification.png")
+                try FileManager.default.copyItem(at: iconURL, to: tmpFile)
+                let attachment = try UNNotificationAttachment(identifier: "birdz-icon", url: tmpFile, options: nil)
+                content.attachments = [attachment]
+            } catch {
+                print("BirdzScraper: Attachment error: \(error.localizedDescription)")
+            }
+        }
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
         let request = UNNotificationRequest(
