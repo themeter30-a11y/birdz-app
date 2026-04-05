@@ -6,7 +6,7 @@ import UserNotifications
 final class BirdzViewController: CAPBridgeViewController {
 
     private var pollTimer: Timer?
-    private var backgroundPollTimer: Timer?
+    
     private var lastBadgeCount: Int = -1
     private var lastSignatures = Set<String>()
     private var refreshControl: UIRefreshControl?
