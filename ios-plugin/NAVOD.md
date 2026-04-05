@@ -45,6 +45,7 @@ Toto otvorí Xcode. Potom:
    - `BirdzNotificationPlugin.swift`
    - `AppDelegate+Birdz.swift`
 4. Uisti sa, že je zaškrtnuté **"Copy items if needed"**
+5. **Nepridávaj** `BirdzMonitorInjectedScript.swift` — už sa nepoužíva. Ak si ho do Xcode pridal skôr, zmaž ho z projektu aj z targetu App.
 
 ## Krok 6: Uprav AppDelegate.swift
 V Xcode otvor súbor `App/AppDelegate.swift` a nájdi funkciu:
