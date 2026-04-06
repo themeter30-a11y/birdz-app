@@ -267,16 +267,29 @@ final class BirdzViewController: CAPBridgeViewController {
             return
         }
 
-        guard !missingItems.isEmpty else {
-            if effectiveUnreadCount > 0 && parsedItems.isEmpty && (isInitialState || didContentChange) {
-                let fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
-                sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
-            }
-            return
-        }
+        // Skip notifications on first launch (initial state)
+        guard !isInitialState else { return }
 
-        for (index, item) in missingItems.enumerated() {
-            sendNotification(for: item, badge: unreadBadge, delay: 0.35 + (Double(index) * 0.25))
+        // If content changed, ALWAYS send a notification
+        guard didContentChange else { return }
+
+        if !missingItems.isEmpty {
+            for (index, item) in missingItems.enumerated() {
+                sendNotification(for: item, badge: unreadBadge, delay: 0.35 + (Double(index) * 0.25))
+            }
+        } else {
+            // Content changed but sync store filtered everything — force a fallback notification
+            let fallbackBody: String
+            if let firstItem = parsedItems.first, firstItem.isMeaningful {
+                var parts: [String] = []
+                if !firstItem.author.isEmpty { parts.append(firstItem.author) }
+                if !firstItem.text.isEmpty { parts.append(firstItem.text) }
+                if !firstItem.target.isEmpty { parts.append("➜ \(firstItem.target)") }
+                fallbackBody = parts.isEmpty ? "Máš novú aktivitu v reakciách" : parts.joined(separator: " · ")
+            } else {
+                fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
+            }
+            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
         }
     }
 
