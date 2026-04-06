@@ -28,7 +28,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             print("BirdzBG: Notification permission granted=\(granted)")
         }
 
-        clearStaleBirdzNotifications()
+        // Restore badge from saved value
+        let savedBadge = UserDefaults.standard.integer(forKey: StorageKeys.unreadBadge)
+        UIApplication.shared.applicationIconBadgeNumber = savedBadge
 
         BGTaskScheduler.shared.register(forTaskWithIdentifier: AppDelegate.bgTaskIdentifier, using: nil) { task in
             guard let refreshTask = task as? BGAppRefreshTask else {
