@@ -586,69 +586,77 @@ private enum BirdzReakcieScrapeJS {
             return 'Upozornenie';
         }
 
+        function isRedColor(color) {
+            var match = (color || '').match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (!match) return false;
+            var r = parseInt(match[1], 10);
+            var g = parseInt(match[2], 10);
+            var b = parseInt(match[3], 10);
+            return r > 150 && g < 120 && b < 120;
+        }
+
+        function isUnreadContainer(el) {
+            if (!el) return false;
+            var style = window.getComputedStyle(el);
+            var bgColor = style.backgroundColor || '';
+            var bgMatch = bgColor.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (!bgMatch) return false;
+            var r = parseInt(bgMatch[1], 10);
+            var g = parseInt(bgMatch[2], 10);
+            var b = parseInt(bgMatch[3], 10);
+            return b > 210 && g > 210 && r > 180 && !(r === 255 && g === 255 && b === 255);
+        }
+
+        function extractExactUnreadText(el) {
+            if (!el) return '';
+
+            var exactParts = [];
+            var seen = {};
+            var nodes = el.querySelectorAll('*');
+
+            for (var i = 0; i < nodes.length; i++) {
+                var node = nodes[i];
+                var text = trimText(node.textContent || '');
+                if (!text || text.length < 2) continue;
+
+                var style = window.getComputedStyle(node);
+                var looksRed = isRedColor(style.color || '');
+                var looksBold = (parseInt(style.fontWeight, 10) || 0) >= 600 || /^(STRONG|B)$/.test(node.tagName);
+                var looksUnread = looksRed || looksBold;
+                var isCommentLine = /\d+\s+nov[ýy]ch?\s+koment/i.test(text) || /^[A-Za-zÁ-ž0-9_\-]+\s*:/i.test(text);
+
+                if (looksUnread && isCommentLine && !seen[text]) {
+                    seen[text] = true;
+                    exactParts.push(text);
+                }
+            }
+
+            if (exactParts.length > 0) {
+                return trimText(exactParts.join(' '));
+            }
+
+            return '';
+        }
+
         var items = [];
         var unreadBadge = 0;
-
-        // The /reakcie/ page has items that can be unread (highlighted with light blue bg, red/bold text)
-        // Strategy: find ALL potential item containers, then check if they contain unread markers
-
-        // First, try to get all items from the reactions list
-        // Birdz uses <li> or similar containers for each reaction item
         var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
-        
+
         for (var i = 0; i < rows.length && items.length < 40; i++) {
             var el = rows[i];
             var txt = trimText(el.innerText || el.textContent || '');
             if (txt.length < 8 || txt.length > 500) continue;
-            
-            // Skip navigation/menu items
             if (/^(Fórum|Statusy|Blogy|Obrázky|Ľudia|Nastavenia|Prihlás|Odhlás|Hľadaj|Pridaj|Roleta)/i.test(txt)) continue;
-            
-            // Detect if this is an unread reaction item
-            var isUnread = false;
-            
-            // Method 1: Check for highlighted background (light blue = unread on birdz)
-            var elBg = window.getComputedStyle(el).backgroundColor || '';
-            var bgM = elBg.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-            if (bgM) {
-                var r = parseInt(bgM[1]), g = parseInt(bgM[2]), b = parseInt(bgM[3]);
-                // Light blue-ish background (like the screenshot shows)
-                if (r > 180 && g > 200 && b > 220 && !(r === 255 && g === 255 && b === 255)) {
-                    isUnread = true;
-                }
-                // Any non-white, non-transparent colored bg
-                if (b > r && b > 200 && g > 200) isUnread = true;
-            }
-            
-            // Method 2: Check children for red colored text
-            var childEls = el.querySelectorAll('*');
-            var hasRedText = false;
-            for (var c = 0; c < childEls.length; c++) {
-                var cc = window.getComputedStyle(childEls[c]).color || '';
-                var ccm = cc.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-                if (ccm) {
-                    var cr = parseInt(ccm[1]), cg = parseInt(ccm[2]), cb = parseInt(ccm[3]);
-                    if (cr > 150 && cg < 100 && cb < 100) { hasRedText = true; break; }
-                }
-            }
-            if (hasRedText) isUnread = true;
-            
-            // Method 3: Check for bold number pattern "X nových komentov"
-            var boldEls = el.querySelectorAll('strong, b');
-            for (var be = 0; be < boldEls.length; be++) {
-                var bTxt = trimText(boldEls[be].textContent);
-                if (/^\d+\s+nov/i.test(bTxt)) { isUnread = true; break; }
-            }
-            
-            // Method 4: Check if text matches typical reaction patterns  
+
+            var exactUnreadText = extractExactUnreadText(el);
+            var isUnread = !!exactUnreadText || isUnreadContainer(el);
             var hasReactionPattern = /\d+\s+nov[ýy]ch\s+koment|označil|sleduje|reagoval|komentoval|okomentoval|správ/i.test(txt);
-            
+
             if (!isUnread && !hasReactionPattern) continue;
-            
-            // Clean the text: remove trash icon text or extra whitespace
-            var cleanText = txt.replace(/🗑️?/g, '').replace(/\s+/g, ' ').trim();
-            
-            // Extract links for author/target
+
+            var cleanText = exactUnreadText || txt.replace(/🗑️?/g, '').replace(/\s+/g, ' ').trim();
+            if (!cleanText) continue;
+
             var links = el.querySelectorAll('a');
             var author = '';
             var target = '';
@@ -664,29 +672,23 @@ private enum BirdzReakcieScrapeJS {
             var time = timeEl ? trimText(timeEl.textContent) : '';
 
             items.push({
-                type: detectType(txt),
+                type: detectType(cleanText),
                 author: author,
                 text: cleanText.substring(0, 300),
                 target: target,
-                time: time,
-                isUnread: isUnread
+                time: time
             });
 
-            // Count unread badge
             if (isUnread) {
-                var numMatch = txt.match(/(\d+)\s+nov[ýy]ch?\s+koment/i);
+                var numMatch = cleanText.match(/(\d+)\s+nov[ýy]ch?\s+koment/i);
                 if (numMatch) {
                     unreadBadge += parseInt(numMatch[1], 10) || 0;
-                } else {
-                    var hasAction = /označil|sleduje|reagoval|komentoval|okomentoval|správ|sprav/i.test(txt);
-                    if (hasAction) {
-                        unreadBadge += 1;
-                    }
+                } else if (/označil|sleduje|reagoval|komentoval|okomentoval|správ|sprav/i.test(cleanText)) {
+                    unreadBadge += 1;
                 }
             }
         }
 
-        // Fallback: if nothing detected, try the "IBA NEPREČÍTANÉ X" tab
         if (unreadBadge === 0) {
             var tabMatch = rawText.match(/neprečítan[ée]\s+(\d+)/i);
             if (tabMatch) {
