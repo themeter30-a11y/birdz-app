@@ -247,13 +247,15 @@ final class BirdzViewController: CAPBridgeViewController {
 
         let normalizedRawText = rawText.lowercased()
         let parsedItems = items.map(BirdzScrapedNotificationItem.init).filter { $0.isMeaningful }
-        let skip = unreadBadge == 0 && parsedItems.isEmpty && (
+        let preferredItems = parsedItems.filter { !$0.text.isEmpty }
+        let notificationItems = preferredItems.isEmpty ? parsedItems : preferredItems
+        let skip = unreadBadge == 0 && notificationItems.isEmpty && (
             normalizedRawText.contains("0 nových komment") ||
             normalizedRawText.contains("0 nových koment") ||
             normalizedRawText.contains("0 novych koment")
         )
         let effectiveUnreadCount = skip ? 0 : unreadBadge
-        let missingItems = BirdzNotificationSyncStore.unsentItems(from: parsedItems, unreadCount: effectiveUnreadCount)
+        let missingItems = BirdzNotificationSyncStore.unsentItems(from: notificationItems, unreadCount: effectiveUnreadCount)
         let didUnreadCountIncrease = unreadBadge > previousUnreadBadge
 
         syncSystemBadge(with: unreadBadge)
@@ -262,7 +264,7 @@ final class BirdzViewController: CAPBridgeViewController {
 
         let isInitialState = lastContentHash.isEmpty
         let didContentChange = contentHash != lastContentHash
-        print("BirdzScraper: hash=\(contentHash) prev=\(lastContentHash) badge=\(unreadBadge) prevBadge=\(previousUnreadBadge) items=\(parsedItems.count) missing=\(missingItems.count)")
+        print("BirdzScraper: hash=\(contentHash) prev=\(lastContentHash) badge=\(unreadBadge) prevBadge=\(previousUnreadBadge) items=\(notificationItems.count) missing=\(missingItems.count)")
 
         storeLastContentHash(contentHash)
 
@@ -271,14 +273,10 @@ final class BirdzViewController: CAPBridgeViewController {
             return
         }
 
-        // Skip notifications on first launch (initial state)
         guard !isInitialState else { return }
 
-        // Simple rule: if content changed AND there are unread items, notify
         let shouldNotify = didContentChange && unreadBadge > 0
-        // Also notify if unread count went up (new notification arrived without hash change)
         let shouldForceNotify = didUnreadCountIncrease && unreadBadge > 0
-        // Also notify if there are unsent items from sync store
         let hasMissing = !missingItems.isEmpty
 
         guard shouldNotify || shouldForceNotify || hasMissing else {
@@ -293,18 +291,13 @@ final class BirdzViewController: CAPBridgeViewController {
                 sendNotification(for: item, badge: unreadBadge, delay: 1.0 + (Double(index) * 0.8))
             }
         } else {
-            // Content changed but sync store filtered everything — force a fallback notification
             let fallbackBody: String
-            if let firstItem = parsedItems.first, firstItem.isMeaningful {
-                var parts: [String] = []
-                if !firstItem.author.isEmpty { parts.append(firstItem.author) }
-                if !firstItem.text.isEmpty { parts.append(firstItem.text) }
-                if !firstItem.target.isEmpty { parts.append("➜ \(firstItem.target)") }
-                fallbackBody = parts.isEmpty ? "Máš novú aktivitu v reakciách" : parts.joined(separator: " · ")
+            if let firstItem = notificationItems.first, !firstItem.text.isEmpty {
+                fallbackBody = firstItem.text
             } else {
-                fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
+                fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(260))
             }
-            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
+            sendNotification(title: "Birdz", body: fallbackBody, badge: unreadBadge)
         }
     }
 
