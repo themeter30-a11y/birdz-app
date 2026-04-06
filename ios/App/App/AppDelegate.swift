@@ -305,6 +305,21 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        if let deepLink = userInfo["deepLink"] as? String,
+           let url = URL(string: deepLink) {
+            DispatchQueue.main.async {
+                if let vc = self.window?.rootViewController as? BirdzViewController,
+                   let wv = vc.webView {
+                    let escaped = deepLink
+                        .replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "'", with: "\\'")
+                    wv.evaluateJavaScript("window.location.href = '\(escaped)';", completionHandler: nil)
+                } else {
+                    UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                }
+            }
+        }
         completionHandler()
     }
 }
