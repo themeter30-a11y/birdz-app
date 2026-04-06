@@ -56,6 +56,7 @@ final class BirdzViewController: CAPBridgeViewController {
 
     @objc private func handleAppDidBecomeActive() {
         pendingBadgeCount = 0
+        UserDefaults.standard.set(0, forKey: "birdz_pending_badge")
         DispatchQueue.main.async {
             UIApplication.shared.applicationIconBadgeNumber = 0
         }
