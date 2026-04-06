@@ -594,11 +594,82 @@ private enum BirdzReakcieScrapeJS {
         }
 
         var items = [];
+        var unreadBadge = 0;
+
+        // Find all potential notification rows
         var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
         for (var i = 0; i < rows.length && items.length < 40; i++) {
             var el = rows[i];
             var txt = trimText(el.innerText || el.textContent || '');
             if (txt.length < 5 || txt.length > 500) continue;
+
+            // Check if this item is "unread" by looking for red/bold styling
+            var isUnread = false;
+
+            // Check computed style of the element and its children for red color
+            var redTextParts = [];
+            var allTextNodes = el.querySelectorAll('*');
+            for (var c = 0; c < allTextNodes.length; c++) {
+                var child = allTextNodes[c];
+                var cStyle = window.getComputedStyle(child);
+                var cColor = cStyle.color || '';
+                var cm = cColor.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+                if (cm) {
+                    var cr = parseInt(cm[1]), cg = parseInt(cm[2]), cb = parseInt(cm[3]);
+                    // Red-ish text (red > 150, green < 100, blue < 100)
+                    if (cr > 150 && cg < 100 && cb < 100) {
+                        var childText = trimText(child.textContent);
+                        if (childText.length > 0) {
+                            redTextParts.push(childText);
+                            isUnread = true;
+                        }
+                    }
+                }
+            }
+
+            // Also check background highlight
+            var elStyle = window.getComputedStyle(el);
+            var bgColor = elStyle.backgroundColor || '';
+            var bgMatch = bgColor.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (bgMatch) {
+                var br = parseInt(bgMatch[1]), bg2 = parseInt(bgMatch[2]), bb = parseInt(bgMatch[3]);
+                if (!(br === 255 && bg2 === 255 && bb === 255) && !(br === 0 && bg2 === 0 && bb === 0)) {
+                    if (br > 200 || bg2 > 200 || bb > 200) isUnread = true;
+                }
+            }
+
+            // Check for bold with number pattern
+            var boldEls = el.querySelectorAll('strong, b');
+            for (var be = 0; be < boldEls.length; be++) {
+                var boldText = trimText(boldEls[be].textContent);
+                if (/^\d+\s+nov/i.test(boldText)) {
+                    isUnread = true;
+                    break;
+                }
+            }
+
+            // Build the full notification text from the element
+            // Use the complete text of the item as it appears on the page
+            var fullText = txt;
+
+            // If we found red text parts, deduplicate and join them as the notification text
+            if (redTextParts.length > 0) {
+                // Deduplicate: remove parts that are substrings of other parts
+                var unique = [];
+                for (var rp = 0; rp < redTextParts.length; rp++) {
+                    var isDuplicate = false;
+                    for (var rp2 = 0; rp2 < redTextParts.length; rp2++) {
+                        if (rp !== rp2 && redTextParts[rp2].length > redTextParts[rp].length && redTextParts[rp2].indexOf(redTextParts[rp]) > -1) {
+                            isDuplicate = true;
+                            break;
+                        }
+                    }
+                    if (!isDuplicate && unique.indexOf(redTextParts[rp]) === -1) {
+                        unique.push(redTextParts[rp]);
+                    }
+                }
+                fullText = unique.join(' ');
+            }
 
             var links = el.querySelectorAll('a');
             var author = '';
@@ -617,78 +688,24 @@ private enum BirdzReakcieScrapeJS {
             items.push({
                 type: detectType(txt),
                 author: author,
-                text: txt.substring(0, 200),
+                text: fullText.substring(0, 300),
                 target: target,
-                time: time
+                time: time,
+                isUnread: isUnread
             });
-        }
 
-        var rawText = trimText(document.body ? document.body.innerText : '');
-
-        // Count unread notifications by finding items with red/bold/highlighted styling
-        var unreadBadge = 0;
-        var unreadItemCount = 0;
-
-        // Strategy: find all reaction items and check if they are "unread" (red/bold text)
-        var allItems = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
-        for (var u = 0; u < allItems.length; u++) {
-            var el = allItems[u];
-            var elText = trimText(el.innerText || el.textContent || '');
-            if (elText.length < 5 || elText.length > 500) continue;
-
-            // Check if this item is "unread" by looking for red/bold styling indicators
-            var isUnread = false;
-            var style = window.getComputedStyle(el);
-            var color = style.color || '';
-            var bgColor = style.backgroundColor || '';
-            var fontWeight = parseInt(style.fontWeight) || 0;
-
-            // Check for red-ish text color (rgb values where red > 150, green < 100, blue < 100)
-            var colorMatch = color.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-            if (colorMatch) {
-                var r = parseInt(colorMatch[1]), g = parseInt(colorMatch[2]), b = parseInt(colorMatch[3]);
-                if (r > 150 && g < 100 && b < 100) isUnread = true;
-            }
-
-            // Check for highlighted background (light blue, light yellow, etc - non-white, non-transparent)
-            var bgMatch = bgColor.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-            if (bgMatch) {
-                var br = parseInt(bgMatch[1]), bg2 = parseInt(bgMatch[2]), bb = parseInt(bgMatch[3]);
-                // If background is not white (255,255,255) and not transparent/default
-                if (!(br === 255 && bg2 === 255 && bb === 255) && !(br === 0 && bg2 === 0 && bb === 0)) {
-                    // Light colored background = highlighted/unread
-                    if (br > 200 || bg2 > 200 || bb > 200) isUnread = true;
-                }
-            }
-
-            // Check for bold text or strong elements inside
-            if (fontWeight >= 700) isUnread = true;
-            var boldEls = el.querySelectorAll('strong, b, [style*="bold"]');
-            if (boldEls.length > 0) {
-                // Check if bold text contains a number pattern like "4 nových komentov"
-                for (var be = 0; be < boldEls.length; be++) {
-                    var boldText = trimText(boldEls[be].textContent);
-                    if (/^\d+\s+nov/.test(boldText)) {
-                        isUnread = true;
-                        break;
+            // Count unread badge
+            if (isUnread) {
+                var numMatch = txt.match(/^(\d+)\s+nov/i);
+                if (numMatch) {
+                    unreadBadge += parseInt(numMatch[1], 10) || 0;
+                } else {
+                    var hasAction = /označil|sleduje|reagoval|komentoval|okomentoval|správ|sprav/i.test(txt);
+                    if (hasAction) {
+                        unreadBadge += 1;
                     }
                 }
             }
-
-            if (!isUnread) continue;
-
-            // Extract leading number from the item text
-            var numMatch = elText.match(/^(\d+)\s+nov/i);
-            if (numMatch) {
-                unreadBadge += parseInt(numMatch[1], 10) || 0;
-            } else {
-                // Items without a leading number (like "označil ťa") count as 1
-                var hasAction = /označil|sleduje|reagoval|komentoval|okomentoval|správ|sprav/i.test(elText);
-                if (hasAction) {
-                    unreadBadge += 1;
-                }
-            }
-            unreadItemCount++;
         }
 
         // Fallback: if nothing detected, try the "IBA NEPREČÍTANÉ X" tab
