@@ -33,12 +33,14 @@ final class BirdzViewController: CAPBridgeViewController {
         configureWebViewIfNeeded()
         setupScraperWebView()
         startPolling()
+        consumePendingDeepLinkIfNeeded()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         configureWebViewIfNeeded()
         startPolling()
+        consumePendingDeepLinkIfNeeded()
     }
 
     override func viewDidLayoutSubviews() {
@@ -61,6 +63,7 @@ final class BirdzViewController: CAPBridgeViewController {
 
     @objc private func handleAppDidBecomeActive() {
         configureWebViewIfNeeded()
+        consumePendingDeepLinkIfNeeded()
         syncSystemBadge(with: UserDefaults.standard.integer(forKey: StorageKeys.unreadBadge))
         startPolling()
     }
@@ -69,11 +72,17 @@ final class BirdzViewController: CAPBridgeViewController {
         // Foreground timer pauses in background by iOS design.
     }
 
+    @objc private func handlePendingNotificationDeepLink() {
+        consumePendingDeepLinkIfNeeded()
+    }
+
     private func registerLifecycleObservers() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppDidBecomeActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillResignActive),
                                                name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handlePendingNotificationDeepLink),
+                                               name: .birdzPendingDeepLinkDidChange, object: nil)
     }
 
     // MARK: - Main WebView Configuration
@@ -247,8 +256,9 @@ final class BirdzViewController: CAPBridgeViewController {
 
         let normalizedRawText = rawText.lowercased()
         let parsedItems = items.map(BirdzScrapedNotificationItem.init).filter { $0.isMeaningful }
-        let preferredItems = parsedItems.filter { !$0.text.isEmpty }
-        let notificationItems = preferredItems.isEmpty ? parsedItems : preferredItems
+        let deduplicatedItems = BirdzNotificationSyncStore.deduplicatedItems(from: parsedItems)
+        let preferredItems = deduplicatedItems.filter { !$0.text.isEmpty }
+        let notificationItems = preferredItems.isEmpty ? deduplicatedItems : preferredItems
         let skip = unreadBadge == 0 && notificationItems.isEmpty && (
             normalizedRawText.contains("0 nových komment") ||
             normalizedRawText.contains("0 nových koment") ||
@@ -290,14 +300,10 @@ final class BirdzViewController: CAPBridgeViewController {
             for (index, item) in missingItems.enumerated() {
                 sendNotification(for: item, badge: unreadBadge, delay: 1.0 + (Double(index) * 0.8))
             }
+        } else if let firstItem = notificationItems.first, !firstItem.text.isEmpty {
+            sendNotification(title: "Birdz", body: firstItem.text, badge: unreadBadge, trackedItem: firstItem)
         } else {
-            let fallbackBody: String
-            if let firstItem = notificationItems.first, !firstItem.text.isEmpty {
-                fallbackBody = firstItem.text
-            } else {
-                fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(260))
-            }
-            sendNotification(title: "Birdz", body: fallbackBody, badge: unreadBadge)
+            print("BirdzScraper: Skipping fallback notification because no exact unread item with link was found")
         }
     }
 
@@ -323,7 +329,7 @@ final class BirdzViewController: CAPBridgeViewController {
         content.body = body
         content.sound = .default
         content.badge = NSNumber(value: max(badge, 0))
-        let deepLink = trackedItem?.link.isEmpty == false ? trackedItem!.link : "https://www.birdz.sk/reakcie/"
+        let deepLink = trackedItem.flatMap { $0.link.isEmpty ? nil : $0.link } ?? "https://www.birdz.sk/reakcie/"
         content.userInfo = ["deepLink": deepLink]
         content.threadIdentifier = "birdz-reakcie"
         content.categoryIdentifier = "BIRDZ_REAKCIA"
@@ -375,14 +381,19 @@ final class BirdzViewController: CAPBridgeViewController {
 
     // MARK: - Deep link
 
+    private func consumePendingDeepLinkIfNeeded() {
+        guard webView != nil, let pendingDeepLink = BirdzNotificationRouteStore.peek() else { return }
+        BirdzNotificationRouteStore.clear()
+        navigateToURL(pendingDeepLink)
+    }
+
     private func navigateToURL(_ urlString: String) {
-        guard let wv = webView else { return }
-        let escapedURL = urlString
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
+        guard let normalizedURL = BirdzNotificationRouteStore.normalize(urlString),
+              let url = URL(string: normalizedURL),
+              let wv = webView else { return }
 
         DispatchQueue.main.async {
-            wv.evaluateJavaScript("window.location.href = '\(escapedURL)';", completionHandler: nil)
+            wv.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
         }
     }
 }
@@ -453,7 +464,7 @@ extension BirdzViewController: UNUserNotificationCenterDelegate {
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let userInfo = response.notification.request.content.userInfo
         if let deepLink = userInfo["deepLink"] as? String {
-            navigateToURL(deepLink)
+            BirdzNotificationRouteStore.store(deepLink)
         }
         completionHandler()
     }
@@ -562,6 +573,17 @@ private enum BirdzReakcieScrapeJS {
         if (!handler) return 'no-handler';
 
         function trimText(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
+
+        function normalizeBirdzHref(href) {
+            var value = trimText(href);
+            if (!value || value === '#' || /^javascript:/i.test(value)) return '';
+            try {
+                var normalized = new URL(value, window.location.origin).href;
+                return /https?:\/\/(?:www\.)?birdz\.sk\//i.test(normalized) ? normalized : '';
+            } catch (error) {
+                return '';
+            }
+        }
 
         function simpleHash(str) {
             var hash = 0;
@@ -722,21 +744,22 @@ private enum BirdzReakcieScrapeJS {
             var itemLink = '';
             for (var j = 0; j < links.length; j++) {
                 var linkText = trimText(links[j].textContent);
-                var href = links[j].href || '';
+                var href = normalizeBirdzHref(links[j].getAttribute('href') || links[j].href || '');
                 if (linkText.length > 1 && linkText.length < 50) {
                     if (!author) author = linkText;
                     else if (!target) target = linkText;
                 }
-                if (!itemLink && href && href.indexOf('birdz.sk') > -1 && href !== 'https://www.birdz.sk/reakcie/') {
+                if (!itemLink && href && href !== 'https://www.birdz.sk/reakcie/') {
                     itemLink = href;
                 }
             }
             if (!itemLink && links.length > 0) {
                 for (var lk = 0; lk < links.length; lk++) {
-                    var h = links[lk].href || '';
-                    if (h && h.indexOf('birdz.sk') > -1) { itemLink = h; break; }
+                    var fallbackHref = normalizeBirdzHref(links[lk].getAttribute('href') || links[lk].href || '');
+                    if (fallbackHref) { itemLink = fallbackHref; break; }
                 }
             }
+            if (!itemLink) continue;
 
             var timeEl = el.querySelector('time, [class*="time"], [class*="date"], .ago, small');
             var time = timeEl ? trimText(timeEl.textContent) : '';
