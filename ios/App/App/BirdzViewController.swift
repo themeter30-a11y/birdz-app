@@ -594,15 +594,15 @@ private enum BirdzReakcieScrapeJS {
             return r > 150 && g < 120 && b < 120;
         }
 
-        function isVisibleCandidate(el) {
+        function isRenderableCandidate(el) {
             if (!el) return false;
             var style = window.getComputedStyle(el);
-            if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-            var rect = el.getBoundingClientRect();
-            if (!rect || rect.width < 12 || rect.height < 12) return false;
-            if (rect.right <= 0 || rect.bottom <= 0) return false;
-            if (rect.left >= window.innerWidth || rect.top >= window.innerHeight * 1.5) return false;
-            return true;
+            return !!style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+        }
+
+        function isIgnoredContainer(el) {
+            if (!el || !el.closest) return false;
+            return !!el.closest('.sidebar-wrapper, .sidebar-nav, #header, .header, .header-main, .header_user_menu, nav, header, footer, .sidebar-search, .sidebar-avatar, .logos, .button-more, .button-set');
         }
 
         function isUnreadContainer(el) {
