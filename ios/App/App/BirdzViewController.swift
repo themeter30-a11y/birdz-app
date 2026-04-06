@@ -484,56 +484,25 @@ private enum BirdzReakcieScrapeJS {
             return 'Upozornenie';
         }
 
+        // Extract the actual badge number from the page (red circle with number)
+        var unreadBadge = 0;
+        var badgeEls = document.querySelectorAll('.badge, [class*="badge"], [class*="count"], [class*="notif"] span, .num, [class*="num"]');
+        for (var b = 0; b < badgeEls.length; b++) {
+            var badgeText = trimText(badgeEls[b].textContent);
+            var parsed = parseInt(badgeText, 10);
+            if (!isNaN(parsed) && parsed > 0 && parsed < 1000) {
+                unreadBadge = parsed;
+                break;
+            }
+        }
+        // Fallback: count unread items if no badge found
+        if (unreadBadge === 0) unreadBadge = items.length;
+
         // Get FULL raw text of the page body for hash comparison
         var rawText = trimText(document.body ? document.body.innerText : '');
         var contentHash = simpleHash(rawText);
 
-        // Extract only UNREAD items (bold/strong text = unread on birdz.sk)
-        var items = [];
-        var elements = document.querySelectorAll('li, .item, .notification-item, [class*="reakci"], [class*="notif"], tr, .row');
-        for (var i = 0; i < elements.length; i++) {
-            var el = elements[i];
-            var text = trimText(el.textContent);
-            if (!text || text.length < 10 || text.length > 500) continue;
-
-            // Check if this item is unread (bold, strong, or has unread/new class)
-            var isUnread = false;
-            var style = window.getComputedStyle(el);
-            if (style.fontWeight && (parseInt(style.fontWeight) >= 600 || style.fontWeight === 'bold')) isUnread = true;
-            if (!isUnread && el.querySelector('strong, b, [class*="bold"], [class*="unread"], [class*="new"], [class*="neprecitan"]')) isUnread = true;
-            if (!isUnread && (el.className || '').match(/bold|unread|new|neprecitan|active/i)) isUnread = true;
-
-            // Only collect unread items
-            if (!isUnread) continue;
-
-            var timeEl = el.querySelector('time, .time, .date, [class*="time"], [class*="date"], small');
-            var time = timeEl ? trimText(timeEl.textContent) : '';
-
-            var authorEl = el.querySelector('a[href*="/profil/"], a[href*="/uzivatel/"], a[href*="/user/"], strong, b');
-            var author = authorEl ? trimText(authorEl.textContent) : '';
-
-            var allLinks = el.querySelectorAll('a');
-            var target = '';
-            for (var j = 0; j < allLinks.length; j++) {
-                var linkText = trimText(allLinks[j].textContent);
-                if (linkText && linkText !== author && linkText.length > 3) {
-                    target = linkText.slice(0, 100);
-                    break;
-                }
-            }
-
-            items.push({
-                type: detectType(text),
-                text: text.slice(0, 300),
-                author: author.slice(0, 50),
-                target: target,
-                time: time
-            });
-
-            if (items.length >= 10) break;
-        }
-
-        handler.postMessage({ contentHash: contentHash, items: items, totalCount: items.length, rawText: rawText.slice(0, 500) });
+        handler.postMessage({ contentHash: contentHash, items: items, totalCount: items.length, unreadBadge: unreadBadge, rawText: rawText.slice(0, 500) });
         return 'birdz-reakcie-scraped';
     })();
     """#
