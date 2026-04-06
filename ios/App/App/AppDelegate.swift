@@ -28,6 +28,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             print("BirdzBG: Notification permission granted=\(granted)")
         }
 
+        clearStaleBirdzNotifications()
+
         BGTaskScheduler.shared.register(forTaskWithIdentifier: AppDelegate.bgTaskIdentifier, using: nil) { task in
             guard let refreshTask = task as? BGAppRefreshTask else {
                 task.setTaskCompleted(success: false)
@@ -150,6 +152,33 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }.resume()
     }
 
+    private func clearStaleBirdzNotifications() {
+        let center = UNUserNotificationCenter.current()
+
+        center.getPendingNotificationRequests { requests in
+            let pendingIds = requests
+                .filter { $0.identifier.hasPrefix("birdz") }
+                .map(\.identifier)
+
+            if !pendingIds.isEmpty {
+                center.removePendingNotificationRequests(withIdentifiers: pendingIds)
+                print("BirdzBG: Cleared stale pending notifications=\(pendingIds.count)")
+            }
+        }
+
+        center.getDeliveredNotifications { notifications in
+            let deliveredIds = notifications
+                .map(\.request)
+                .filter { $0.identifier.hasPrefix("birdz") }
+                .map(\.identifier)
+
+            if !deliveredIds.isEmpty {
+                center.removeDeliveredNotifications(withIdentifiers: deliveredIds)
+                print("BirdzBG: Cleared stale delivered notifications=\(deliveredIds.count)")
+            }
+        }
+    }
+
     private func simpleHash(_ str: String) -> String {
         var hash = 0
         for ch in str.unicodeScalars {
@@ -158,32 +187,40 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return String(hash, radix: 36)
     }
 
-    private func extractSnippet(from html: String) -> String {
-        let stripped = html
+    private func normalizedText(from html: String) -> String {
+        html
+            .replacingOccurrences(of: #"<script[\s\S]*?</script>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"<style[\s\S]*?</style>"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
-        let keywords = ["reagoval", "komentoval", "okomentoval", "označil", "oznacil", "sleduje", "správ", "sprav", "blog", "fotk", "status", "forum", "fór"]
-        for keyword in keywords {
-            if let range = stripped.range(of: keyword, options: .caseInsensitive) {
-                let start = stripped.index(range.lowerBound, offsetBy: -60, limitedBy: stripped.startIndex) ?? stripped.startIndex
-                let end = stripped.index(range.upperBound, offsetBy: 140, limitedBy: stripped.endIndex) ?? stripped.endIndex
-                return String(stripped[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+    private func extractSnippet(from html: String) -> String {
+        let stripped = normalizedText(from: html)
+        let patterns = [
+            #"(\d{1,3}\s+nov.{0,24}?koment.{0,32}?pod\s+(?:statusom|statuse|blogom|blogu|fórom|forum|obrázkom|obrazkom|albumom)\s+.{0,220})"#,
+            #"([A-Za-zÁ-ž0-9_\-]{2,40}\s+ťa\s+označil.{0,220})"#,
+            #"([A-Za-zÁ-ž0-9_\-]{2,40}\s+(?:reagoval|komentoval|okomentoval|sleduje|poslal|pridal).{0,220})"#
+        ]
+
+        for pattern in patterns {
+            if let match = firstStringMatch(in: stripped, pattern: pattern) {
+                return match
             }
         }
 
-        return "Máš novú aktivitu v reakciách"
+        return stripped.isEmpty ? "Máš novú aktivitu v reakciách" : String(stripped.prefix(260))
     }
 
     private func shouldSuppressZeroCommentNotification(in html: String, unreadBadge: Int) -> Bool {
         guard unreadBadge == 0 else { return false }
 
-        let normalized = html
-            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        let normalized = normalizedText(from: html).lowercased()
 
         return normalized.contains("0 nových komment") ||
             normalized.contains("0 nových koment") ||
@@ -201,13 +238,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
 
-        let stripped = html
-            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stripped = normalizedText(from: html)
 
         let textPatterns = [
-            #"(\d{1,3})\s+nov.{0,24}(?:koment|reakci|upozor|sprav|správ)"#
+            #"(\d{1,3})\s+nov.{0,24}(?:koment|reakci|upozor|sprav|správ)"#,
+            #"neprečítan[ée]\s+(\d{1,3})"#
         ]
 
         for pattern in textPatterns {
@@ -231,6 +266,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
 
         return Int(text[valueRange])
+    }
+
+    private func firstStringMatch(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+              let valueRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+
+        return String(text[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func sendBackgroundNotification(body: String, badge: Int, completion: @escaping (Bool) -> Void) {
@@ -258,13 +307,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 return
             }
 
-            print("BirdzBG: ✅ Notification scheduled successfully id=\(request.identifier)")
-
-            // Verify it's actually pending
-            UNUserNotificationCenter.current().getPendingNotificationRequests { pending in
-                print("BirdzBG: Pending notifications count=\(pending.count)")
-            }
-
+            print("BirdzBG: ✅ Notification scheduled successfully id=\(request.identifier) body=\(body)")
             completion(true)
         }
     }
