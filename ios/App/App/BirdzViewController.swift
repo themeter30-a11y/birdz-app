@@ -624,21 +624,78 @@ private enum BirdzReakcieScrapeJS {
         }
 
         var rawText = trimText(document.body ? document.body.innerText : '');
+
+        // Count unread notifications by finding items with red/bold/highlighted styling
         var unreadBadge = 0;
-        var badgeEls = document.querySelectorAll('.badge, [class*="badge"], [class*="count"], [class*="notif"] span, .num, [class*="num"]');
-        for (var b = 0; b < badgeEls.length; b++) {
-            var badgeText = trimText(badgeEls[b].textContent);
-            var parsed = parseInt(badgeText, 10);
-            if (!isNaN(parsed) && parsed > 0 && parsed < 1000) {
-                unreadBadge = parsed;
-                break;
+        var unreadItemCount = 0;
+
+        // Strategy: find all reaction items and check if they are "unread" (red/bold text)
+        var allItems = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
+        for (var u = 0; u < allItems.length; u++) {
+            var el = allItems[u];
+            var elText = trimText(el.innerText || el.textContent || '');
+            if (elText.length < 5 || elText.length > 500) continue;
+
+            // Check if this item is "unread" by looking for red/bold styling indicators
+            var isUnread = false;
+            var style = window.getComputedStyle(el);
+            var color = style.color || '';
+            var bgColor = style.backgroundColor || '';
+            var fontWeight = parseInt(style.fontWeight) || 0;
+
+            // Check for red-ish text color (rgb values where red > 150, green < 100, blue < 100)
+            var colorMatch = color.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (colorMatch) {
+                var r = parseInt(colorMatch[1]), g = parseInt(colorMatch[2]), b = parseInt(colorMatch[3]);
+                if (r > 150 && g < 100 && b < 100) isUnread = true;
             }
+
+            // Check for highlighted background (light blue, light yellow, etc - non-white, non-transparent)
+            var bgMatch = bgColor.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (bgMatch) {
+                var br = parseInt(bgMatch[1]), bg2 = parseInt(bgMatch[2]), bb = parseInt(bgMatch[3]);
+                // If background is not white (255,255,255) and not transparent/default
+                if (!(br === 255 && bg2 === 255 && bb === 255) && !(br === 0 && bg2 === 0 && bb === 0)) {
+                    // Light colored background = highlighted/unread
+                    if (br > 200 || bg2 > 200 || bb > 200) isUnread = true;
+                }
+            }
+
+            // Check for bold text or strong elements inside
+            if (fontWeight >= 700) isUnread = true;
+            var boldEls = el.querySelectorAll('strong, b, [style*="bold"]');
+            if (boldEls.length > 0) {
+                // Check if bold text contains a number pattern like "4 nových komentov"
+                for (var be = 0; be < boldEls.length; be++) {
+                    var boldText = trimText(boldEls[be].textContent);
+                    if (/^\d+\s+nov/.test(boldText)) {
+                        isUnread = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!isUnread) continue;
+
+            // Extract leading number from the item text
+            var numMatch = elText.match(/^(\d+)\s+nov/i);
+            if (numMatch) {
+                unreadBadge += parseInt(numMatch[1], 10) || 0;
+            } else {
+                // Items without a leading number (like "označil ťa") count as 1
+                var hasAction = /označil|sleduje|reagoval|komentoval|okomentoval|správ|sprav/i.test(elText);
+                if (hasAction) {
+                    unreadBadge += 1;
+                }
+            }
+            unreadItemCount++;
         }
 
+        // Fallback: if nothing detected, try the "IBA NEPREČÍTANÉ X" tab
         if (unreadBadge === 0) {
-            var unreadMatch = rawText.match(/(\d{1,3})\s+nov.{0,24}(?:koment|reakci|upozor|sprav|správ)/i);
-            if (unreadMatch) {
-                unreadBadge = parseInt(unreadMatch[1], 10) || 0;
+            var tabMatch = rawText.match(/neprečítan[ée]\s+(\d+)/i);
+            if (tabMatch) {
+                unreadBadge = parseInt(tabMatch[1], 10) || 0;
             }
         }
 
