@@ -270,6 +270,8 @@ final class BirdzViewController: CAPBridgeViewController {
         content.sound = .default
         content.badge = NSNumber(value: badge)
         content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
+        content.threadIdentifier = "birdz-reakcie"
+        content.categoryIdentifier = "BIRDZ_REAKCIA"
 
         // Attach Birdz icon to the notification
         if let iconURL = Bundle.main.url(forResource: "birdz_notification", withExtension: "png") {
@@ -334,7 +336,7 @@ extension BirdzViewController: UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound, .badge])
+        completionHandler([.banner, .list, .sound, .badge])
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
