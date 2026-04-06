@@ -110,13 +110,29 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
 
             let changed = !savedHash.isEmpty && newHash != savedHash
-            if changed {
-                let snippet = self.extractSnippet(from: html)
-                self.sendBackgroundNotification(body: snippet, badge: unreadBadge)
+            guard changed else {
+                UserDefaults.standard.set(newHash, forKey: StorageKeys.lastBackgroundContentHash)
+                completion(true, false)
+                return
             }
 
-            UserDefaults.standard.set(newHash, forKey: StorageKeys.lastBackgroundContentHash)
-            completion(true, changed)
+            guard !self.shouldSuppressZeroCommentNotification(in: html, unreadBadge: unreadBadge) else {
+                print("BirdzBG: Skipping notification – 0 nových komentárov")
+                UserDefaults.standard.set(newHash, forKey: StorageKeys.lastBackgroundContentHash)
+                completion(true, false)
+                return
+            }
+
+            let snippet = self.extractSnippet(from: html)
+            self.sendBackgroundNotification(body: snippet, badge: unreadBadge) { scheduled in
+                if scheduled {
+                    UserDefaults.standard.set(newHash, forKey: StorageKeys.lastBackgroundContentHash)
+                } else {
+                    print("BirdzBG: Notification scheduling failed, keeping hash unsynced for retry")
+                }
+
+                completion(true, true)
+            }
         }.resume()
     }
 
@@ -144,6 +160,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
 
         return "Máš novú aktivitu v reakciách"
+    }
+
+    private func shouldSuppressZeroCommentNotification(in html: String, unreadBadge: Int) -> Bool {
+        guard unreadBadge == 0 else { return false }
+
+        let normalized = html
+            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        return normalized.contains("0 nových komment") ||
+            normalized.contains("0 nových koment") ||
+            normalized.contains("0 novych koment")
     }
 
     private func extractUnreadBadge(from html: String) -> Int? {
@@ -189,7 +219,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return Int(text[valueRange])
     }
 
-    private func sendBackgroundNotification(body: String, badge: Int) {
+    private func sendBackgroundNotification(body: String, badge: Int, completion: @escaping (Bool) -> Void) {
         let content = UNMutableNotificationContent()
         content.title = "Birdz"
         content.body = body
@@ -220,10 +250,19 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.0, repeats: false)
         let request = UNNotificationRequest(identifier: "birdz-bg-\(UUID().uuidString)", content: content, trigger: trigger)
 
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            print("BirdzBG: Notification settings auth=\(settings.authorizationStatus.rawValue) alert=\(settings.alertSetting.rawValue) center=\(settings.notificationCenterSetting.rawValue) badge=\(settings.badgeSetting.rawValue) sound=\(settings.soundSetting.rawValue)")
+        }
+
         UNUserNotificationCenter.current().add(request) { error in
             if let error {
                 print("BirdzBG: Notification error: \(error.localizedDescription)")
+                completion(false)
+                return
             }
+
+            print("BirdzBG: Notification scheduled")
+            completion(true)
         }
     }
 }

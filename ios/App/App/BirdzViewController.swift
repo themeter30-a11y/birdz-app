@@ -8,6 +8,7 @@ final class BirdzViewController: CAPBridgeViewController {
     private enum StorageKeys {
         static let lastContentHash = "birdz_last_content_hash"
         static let unreadBadge = "birdz_unread_badge"
+        static let lastDeliveredContentHash = "birdz_last_delivered_content_hash"
     }
 
     // MARK: - Properties
@@ -155,8 +156,16 @@ final class BirdzViewController: CAPBridgeViewController {
 
     private func requestNotificationPermission() {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
+            print("BirdzScraper: Notification settings auth=\(settings.authorizationStatus.rawValue) alert=\(settings.alertSetting.rawValue) center=\(settings.notificationCenterSetting.rawValue) badge=\(settings.badgeSetting.rawValue) sound=\(settings.soundSetting.rawValue)")
             if settings.authorizationStatus == .notDetermined {
-                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in }
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+                    if let error {
+                        print("BirdzScraper: Authorization error: \(error.localizedDescription)")
+                        return
+                    }
+
+                    print("BirdzScraper: Authorization requested, granted=\(granted)")
+                }
             }
         }
     }
@@ -259,6 +268,7 @@ final class BirdzViewController: CAPBridgeViewController {
 
         let isInitialState = lastContentHash.isEmpty
         let didContentChange = contentHash != lastContentHash
+        let didDeliverCurrentContent = contentHash == (UserDefaults.standard.string(forKey: StorageKeys.lastDeliveredContentHash) ?? "")
 
         if isInitialState {
             print("BirdzScraper: Initial state stored, hash=\(contentHash)")
@@ -276,12 +286,16 @@ final class BirdzViewController: CAPBridgeViewController {
         // Skip notifications on first launch (initial state)
         guard !isInitialState else { return }
 
-        let shouldNotify = !missingItems.isEmpty || didUnreadCountIncrease || (didContentChange && unreadBadge > 0)
+        if unreadBadge > 0 && !didContentChange && !didUnreadCountIncrease && !didDeliverCurrentContent {
+            print("BirdzScraper: Retrying undelivered unread state")
+        }
+
+        let shouldNotify = !missingItems.isEmpty || didUnreadCountIncrease || (didContentChange && unreadBadge > 0) || (unreadBadge > 0 && !didDeliverCurrentContent)
         guard shouldNotify else { return }
 
         if !missingItems.isEmpty {
             for (index, item) in missingItems.enumerated() {
-                sendNotification(for: item, badge: unreadBadge, delay: 1.0 + (Double(index) * 0.65))
+                sendNotification(for: item, badge: unreadBadge, delay: 1.0 + (Double(index) * 0.65), deliveredContentHash: contentHash)
             }
         } else {
             // Content changed but sync store filtered everything — force a fallback notification
@@ -295,11 +309,11 @@ final class BirdzViewController: CAPBridgeViewController {
             } else {
                 fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
             }
-            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
+            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge, deliveredContentHash: contentHash)
         }
     }
 
-    private func sendNotification(for item: BirdzScrapedNotificationItem, badge: Int, delay: TimeInterval) {
+    private func sendNotification(for item: BirdzScrapedNotificationItem, badge: Int, delay: TimeInterval, deliveredContentHash: String? = nil) {
         let type = item.type.isEmpty ? "Upozornenie" : item.type
         let title = item.author.isEmpty ? "Birdz – \(type)" : "Birdz – \(type) od \(item.author)"
 
@@ -311,10 +325,10 @@ final class BirdzViewController: CAPBridgeViewController {
         if !item.time.isEmpty { bodyParts.append("🕐 \(item.time)") }
 
         let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
-        sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay, trackedItem: item)
+        sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay, trackedItem: item, deliveredContentHash: deliveredContentHash)
     }
 
-    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 1.0, trackedItem: BirdzScrapedNotificationItem? = nil) {
+    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 1.0, trackedItem: BirdzScrapedNotificationItem? = nil, deliveredContentHash: String? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         if !subtitle.isEmpty { content.subtitle = subtitle }
@@ -350,14 +364,24 @@ final class BirdzViewController: CAPBridgeViewController {
             trigger: trigger
         )
 
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            print("BirdzScraper: Scheduling notification auth=\(settings.authorizationStatus.rawValue) alert=\(settings.alertSetting.rawValue) center=\(settings.notificationCenterSetting.rawValue) badge=\(settings.badgeSetting.rawValue) sound=\(settings.soundSetting.rawValue)")
+        }
+
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
                 print("BirdzScraper: Notification error: \(error.localizedDescription)")
                 return
             }
 
+            print("BirdzScraper: Notification scheduled")
+
             if let trackedItem {
                 BirdzNotificationSyncStore.markDelivered(trackedItem)
+            }
+
+            if let deliveredContentHash {
+                UserDefaults.standard.set(deliveredContentHash, forKey: StorageKeys.lastDeliveredContentHash)
             }
         }
     }
