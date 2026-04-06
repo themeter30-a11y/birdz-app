@@ -142,7 +142,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
 
             let snippet = self.extractSnippet(from: html)
-            self.sendBackgroundNotification(body: snippet, badge: unreadBadge) { scheduled in
+            let deepLink = BirdzHTMLLinkMatcher.bestDeepLink(in: html, matchingText: snippet) ?? "https://www.birdz.sk/reakcie/"
+            self.sendBackgroundNotification(body: snippet, badge: unreadBadge, deepLink: deepLink) { scheduled in
                 if scheduled {
                     UserDefaults.standard.set(newHash, forKey: StorageKeys.lastBackgroundContentHash)
                 } else {
@@ -261,13 +262,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return String(text[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func sendBackgroundNotification(body: String, badge: Int, completion: @escaping (Bool) -> Void) {
+    func sendBackgroundNotification(body: String, badge: Int, deepLink: String, completion: @escaping (Bool) -> Void) {
         let content = UNMutableNotificationContent()
         content.title = "Birdz"
         content.body = body
         content.sound = .default
         content.badge = NSNumber(value: max(badge, 0))
-        content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
+        content.userInfo = ["deepLink": deepLink]
         content.threadIdentifier = "birdz-reakcie"
         content.categoryIdentifier = "BIRDZ_REAKCIA"
 
@@ -306,19 +307,8 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let userInfo = response.notification.request.content.userInfo
-        if let deepLink = userInfo["deepLink"] as? String,
-           let url = URL(string: deepLink) {
-            DispatchQueue.main.async {
-                if let vc = self.window?.rootViewController as? BirdzViewController,
-                   let wv = vc.webView {
-                    let escaped = deepLink
-                        .replacingOccurrences(of: "\\", with: "\\\\")
-                        .replacingOccurrences(of: "'", with: "\\'")
-                    wv.evaluateJavaScript("window.location.href = '\(escaped)';", completionHandler: nil)
-                } else {
-                    UIApplication.shared.open(url, options: [:], completionHandler: nil)
-                }
-            }
+        if let deepLink = userInfo["deepLink"] as? String {
+            BirdzNotificationRouteStore.store(deepLink)
         }
         completionHandler()
     }
