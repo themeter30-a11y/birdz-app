@@ -745,7 +745,8 @@ private enum BirdzReakcieScrapeJS {
                 author: author,
                 text: (exactUnreadText || candidateText).substring(0, 300),
                 target: target,
-                time: time
+                time: time,
+                link: itemLink
             });
 
             if (isUnread && exactUnreadText) {
