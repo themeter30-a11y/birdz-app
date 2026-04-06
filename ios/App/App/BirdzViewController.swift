@@ -27,7 +27,7 @@ final class BirdzViewController: CAPBridgeViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        UNUserNotificationCenter.current().delegate = self
+        // Delegate is set in AppDelegate for reliability
         registerLifecycleObservers()
         requestNotificationPermission()
         configureWebViewIfNeeded()
@@ -155,18 +155,12 @@ final class BirdzViewController: CAPBridgeViewController {
     }
 
     private func requestNotificationPermission() {
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            print("BirdzScraper: Notification settings auth=\(settings.authorizationStatus.rawValue) alert=\(settings.alertSetting.rawValue) center=\(settings.notificationCenterSetting.rawValue) badge=\(settings.badgeSetting.rawValue) sound=\(settings.soundSetting.rawValue)")
-            if settings.authorizationStatus == .notDetermined {
-                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
-                    if let error {
-                        print("BirdzScraper: Authorization error: \(error.localizedDescription)")
-                        return
-                    }
-
-                    print("BirdzScraper: Authorization requested, granted=\(granted)")
-                }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+            if let error {
+                print("BirdzScraper: Auth error: \(error.localizedDescription)")
+                return
             }
+            print("BirdzScraper: Permission granted=\(granted)")
         }
     }
 
@@ -268,13 +262,7 @@ final class BirdzViewController: CAPBridgeViewController {
 
         let isInitialState = lastContentHash.isEmpty
         let didContentChange = contentHash != lastContentHash
-        let didDeliverCurrentContent = contentHash == (UserDefaults.standard.string(forKey: StorageKeys.lastDeliveredContentHash) ?? "")
-
-        if isInitialState {
-            print("BirdzScraper: Initial state stored, hash=\(contentHash)")
-        } else if didContentChange {
-            print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
-        }
+        print("BirdzScraper: hash=\(contentHash) prev=\(lastContentHash) badge=\(unreadBadge) prevBadge=\(previousUnreadBadge) items=\(parsedItems.count) missing=\(missingItems.count)")
 
         storeLastContentHash(contentHash)
 
@@ -286,16 +274,23 @@ final class BirdzViewController: CAPBridgeViewController {
         // Skip notifications on first launch (initial state)
         guard !isInitialState else { return }
 
-        if unreadBadge > 0 && !didContentChange && !didUnreadCountIncrease && !didDeliverCurrentContent {
-            print("BirdzScraper: Retrying undelivered unread state")
+        // Simple rule: if content changed AND there are unread items, notify
+        let shouldNotify = didContentChange && unreadBadge > 0
+        // Also notify if unread count went up (new notification arrived without hash change)
+        let shouldForceNotify = didUnreadCountIncrease && unreadBadge > 0
+        // Also notify if there are unsent items from sync store
+        let hasMissing = !missingItems.isEmpty
+
+        guard shouldNotify || shouldForceNotify || hasMissing else {
+            print("BirdzScraper: No notification needed (changed=\(didContentChange) badge=\(unreadBadge) increased=\(didUnreadCountIncrease) missing=\(missingItems.count))")
+            return
         }
 
-        let shouldNotify = !missingItems.isEmpty || didUnreadCountIncrease || (didContentChange && unreadBadge > 0) || (unreadBadge > 0 && !didDeliverCurrentContent)
-        guard shouldNotify else { return }
+        print("BirdzScraper: 🔔 Will send notification! reason: changed=\(shouldNotify) forced=\(shouldForceNotify) missing=\(hasMissing)")
 
         if !missingItems.isEmpty {
             for (index, item) in missingItems.enumerated() {
-                sendNotification(for: item, badge: unreadBadge, delay: 1.0 + (Double(index) * 0.65), deliveredContentHash: contentHash)
+                sendNotification(for: item, badge: unreadBadge, delay: 1.0 + (Double(index) * 0.8))
             }
         } else {
             // Content changed but sync store filtered everything — force a fallback notification
@@ -309,11 +304,11 @@ final class BirdzViewController: CAPBridgeViewController {
             } else {
                 fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
             }
-            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge, deliveredContentHash: contentHash)
+            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
         }
     }
 
-    private func sendNotification(for item: BirdzScrapedNotificationItem, badge: Int, delay: TimeInterval, deliveredContentHash: String? = nil) {
+    private func sendNotification(for item: BirdzScrapedNotificationItem, badge: Int, delay: TimeInterval) {
         let type = item.type.isEmpty ? "Upozornenie" : item.type
         let title = item.author.isEmpty ? "Birdz – \(type)" : "Birdz – \(type) od \(item.author)"
 
@@ -325,10 +320,10 @@ final class BirdzViewController: CAPBridgeViewController {
         if !item.time.isEmpty { bodyParts.append("🕐 \(item.time)") }
 
         let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
-        sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay, trackedItem: item, deliveredContentHash: deliveredContentHash)
+        sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay, trackedItem: item)
     }
 
-    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 1.0, trackedItem: BirdzScrapedNotificationItem? = nil, deliveredContentHash: String? = nil) {
+    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 1.0, trackedItem: BirdzScrapedNotificationItem? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         if !subtitle.isEmpty { content.subtitle = subtitle }
@@ -344,19 +339,6 @@ final class BirdzViewController: CAPBridgeViewController {
             content.relevanceScore = 1.0
         }
 
-        if let iconURL = Bundle.main.url(forResource: "birdz_notification", withExtension: "png") {
-            do {
-                let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
-                let tmpFile = tmpDir.appendingPathComponent("birdz_notification.png")
-                try FileManager.default.copyItem(at: iconURL, to: tmpFile)
-                let attachment = try UNNotificationAttachment(identifier: "birdz-icon", url: tmpFile, options: nil)
-                content.attachments = [attachment]
-            } catch {
-                print("BirdzScraper: Attachment error: \(error.localizedDescription)")
-            }
-        }
-
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(delay, 1.0), repeats: false)
         let request = UNNotificationRequest(
             identifier: "birdz-\(UUID().uuidString)",
@@ -364,24 +346,22 @@ final class BirdzViewController: CAPBridgeViewController {
             trigger: trigger
         )
 
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            print("BirdzScraper: Scheduling notification auth=\(settings.authorizationStatus.rawValue) alert=\(settings.alertSetting.rawValue) center=\(settings.notificationCenterSetting.rawValue) badge=\(settings.badgeSetting.rawValue) sound=\(settings.soundSetting.rawValue)")
-        }
-
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("BirdzScraper: Notification error: \(error.localizedDescription)")
+                print("BirdzScraper: ❌ Notification error: \(error.localizedDescription)")
                 return
             }
 
-            print("BirdzScraper: Notification scheduled")
+            print("BirdzScraper: ✅ Notification scheduled id=\(request.identifier) title=\(title)")
+
+            // Verify it's pending
+            UNUserNotificationCenter.current().getPendingNotificationRequests { pending in
+                let ours = pending.filter { $0.identifier.hasPrefix("birdz-") }
+                print("BirdzScraper: Pending birdz notifications: \(ours.count)")
+            }
 
             if let trackedItem {
                 BirdzNotificationSyncStore.markDelivered(trackedItem)
-            }
-
-            if let deliveredContentHash {
-                UserDefaults.standard.set(deliveredContentHash, forKey: StorageKeys.lastDeliveredContentHash)
             }
         }
     }
