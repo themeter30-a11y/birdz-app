@@ -18,6 +18,7 @@ final class BirdzViewController: CAPBridgeViewController {
     private var lastContentHash: String = ""
     private var isFirstScrape = true
     private var scraperIsLoading = false
+    private var pendingBadgeCount: Int = 0
 
     override func viewDidLoad() {
         super.viewDidLoad()
