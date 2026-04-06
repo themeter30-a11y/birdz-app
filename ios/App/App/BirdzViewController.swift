@@ -240,14 +240,20 @@ final class BirdzViewController: CAPBridgeViewController {
         let items = payload["items"] as? [[String: Any]] ?? []
         let rawText = payload["rawText"] as? String ?? ""
         let unreadBadge = max(payload["unreadBadge"] as? Int ?? 0, 0)
-
-        syncSystemBadge(with: unreadBadge)
+        let previousUnreadBadge = UserDefaults.standard.integer(forKey: StorageKeys.unreadBadge)
 
         let normalizedRawText = rawText.lowercased()
-        let skip = normalizedRawText.contains("0 nových komment") || normalizedRawText.contains("0 nových koment") || normalizedRawText.contains("0 novych koment")
-        let effectiveUnreadCount = skip ? 0 : unreadBadge
         let parsedItems = items.map(BirdzScrapedNotificationItem.init).filter { $0.isMeaningful }
+        let skip = unreadBadge == 0 && parsedItems.isEmpty && (
+            normalizedRawText.contains("0 nových komment") ||
+            normalizedRawText.contains("0 nových koment") ||
+            normalizedRawText.contains("0 novych koment")
+        )
+        let effectiveUnreadCount = skip ? 0 : unreadBadge
         let missingItems = BirdzNotificationSyncStore.unsentItems(from: parsedItems, unreadCount: effectiveUnreadCount)
+        let didUnreadCountIncrease = unreadBadge > previousUnreadBadge
+
+        syncSystemBadge(with: unreadBadge)
 
         guard !contentHash.isEmpty else { return }
 
@@ -270,12 +276,12 @@ final class BirdzViewController: CAPBridgeViewController {
         // Skip notifications on first launch (initial state)
         guard !isInitialState else { return }
 
-        // If content changed, ALWAYS send a notification
-        guard didContentChange else { return }
+        let shouldNotify = !missingItems.isEmpty || didUnreadCountIncrease || (didContentChange && unreadBadge > 0)
+        guard shouldNotify else { return }
 
         if !missingItems.isEmpty {
             for (index, item) in missingItems.enumerated() {
-                sendNotification(for: item, badge: unreadBadge, delay: 0.35 + (Double(index) * 0.25))
+                sendNotification(for: item, badge: unreadBadge, delay: 1.0 + (Double(index) * 0.65))
             }
         } else {
             // Content changed but sync store filtered everything — force a fallback notification
@@ -308,7 +314,7 @@ final class BirdzViewController: CAPBridgeViewController {
         sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay, trackedItem: item)
     }
 
-    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 0.5, trackedItem: BirdzScrapedNotificationItem? = nil) {
+    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 1.0, trackedItem: BirdzScrapedNotificationItem? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         if !subtitle.isEmpty { content.subtitle = subtitle }
@@ -318,6 +324,11 @@ final class BirdzViewController: CAPBridgeViewController {
         content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
         content.threadIdentifier = "birdz-reakcie"
         content.categoryIdentifier = "BIRDZ_REAKCIA"
+
+        if #available(iOS 15.0, *) {
+            content.interruptionLevel = .active
+            content.relevanceScore = 1.0
+        }
 
         if let iconURL = Bundle.main.url(forResource: "birdz_notification", withExtension: "png") {
             do {
@@ -332,7 +343,7 @@ final class BirdzViewController: CAPBridgeViewController {
             }
         }
 
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(delay, 0.2), repeats: false)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(delay, 1.0), repeats: false)
         let request = UNNotificationRequest(
             identifier: "birdz-\(UUID().uuidString)",
             content: content,
