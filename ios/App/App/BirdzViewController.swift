@@ -459,13 +459,12 @@ private enum BirdzReakcieScrapeJS {
 
         function trimText(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
 
-        // Simple hash of entire text content for change detection
         function simpleHash(str) {
             var hash = 0;
             for (var i = 0; i < str.length; i++) {
                 var ch = str.charCodeAt(i);
                 hash = ((hash << 5) - hash) + ch;
-                hash = hash & hash; // Convert to 32bit integer
+                hash = hash & hash;
             }
             return hash.toString(36);
         }
@@ -484,7 +483,38 @@ private enum BirdzReakcieScrapeJS {
             return 'Upozornenie';
         }
 
-        // Extract the actual badge number from the page (red circle with number)
+        // Scrape notification items
+        var items = [];
+        var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
+        for (var i = 0; i < rows.length && items.length < 10; i++) {
+            var el = rows[i];
+            var txt = trimText(el.innerText || el.textContent || '');
+            if (txt.length < 5 || txt.length > 500) continue;
+
+            var links = el.querySelectorAll('a');
+            var author = '';
+            var target = '';
+            for (var j = 0; j < links.length; j++) {
+                var linkText = trimText(links[j].textContent);
+                if (linkText.length > 1 && linkText.length < 50) {
+                    if (!author) author = linkText;
+                    else if (!target) target = linkText;
+                }
+            }
+
+            var timeEl = el.querySelector('time, [class*="time"], [class*="date"], .ago, small');
+            var time = timeEl ? trimText(timeEl.textContent) : '';
+
+            items.push({
+                type: detectType(txt),
+                author: author,
+                text: txt.substring(0, 200),
+                target: target,
+                time: time
+            });
+        }
+
+        // Badge
         var unreadBadge = 0;
         var badgeEls = document.querySelectorAll('.badge, [class*="badge"], [class*="count"], [class*="notif"] span, .num, [class*="num"]');
         for (var b = 0; b < badgeEls.length; b++) {
@@ -495,10 +525,8 @@ private enum BirdzReakcieScrapeJS {
                 break;
             }
         }
-        // Fallback: count unread items if no badge found
         if (unreadBadge === 0) unreadBadge = items.length;
 
-        // Get FULL raw text of the page body for hash comparison
         var rawText = trimText(document.body ? document.body.innerText : '');
         var contentHash = simpleHash(rawText);
 
