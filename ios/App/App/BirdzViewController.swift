@@ -596,81 +596,66 @@ private enum BirdzReakcieScrapeJS {
         var items = [];
         var unreadBadge = 0;
 
-        // Find all potential notification rows
+        // The /reakcie/ page has items that can be unread (highlighted with light blue bg, red/bold text)
+        // Strategy: find ALL potential item containers, then check if they contain unread markers
+
+        // First, try to get all items from the reactions list
+        // Birdz uses <li> or similar containers for each reaction item
         var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
+        
         for (var i = 0; i < rows.length && items.length < 40; i++) {
             var el = rows[i];
             var txt = trimText(el.innerText || el.textContent || '');
-            if (txt.length < 5 || txt.length > 500) continue;
-
-            // Check if this item is "unread" by looking for red/bold styling
+            if (txt.length < 8 || txt.length > 500) continue;
+            
+            // Skip navigation/menu items
+            if (/^(Fórum|Statusy|Blogy|Obrázky|Ľudia|Nastavenia|Prihlás|Odhlás|Hľadaj|Pridaj|Roleta)/i.test(txt)) continue;
+            
+            // Detect if this is an unread reaction item
             var isUnread = false;
-
-            // Check computed style of the element and its children for red color
-            var redTextParts = [];
-            var allTextNodes = el.querySelectorAll('*');
-            for (var c = 0; c < allTextNodes.length; c++) {
-                var child = allTextNodes[c];
-                var cStyle = window.getComputedStyle(child);
-                var cColor = cStyle.color || '';
-                var cm = cColor.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-                if (cm) {
-                    var cr = parseInt(cm[1]), cg = parseInt(cm[2]), cb = parseInt(cm[3]);
-                    // Red-ish text (red > 150, green < 100, blue < 100)
-                    if (cr > 150 && cg < 100 && cb < 100) {
-                        var childText = trimText(child.textContent);
-                        if (childText.length > 0) {
-                            redTextParts.push(childText);
-                            isUnread = true;
-                        }
-                    }
+            
+            // Method 1: Check for highlighted background (light blue = unread on birdz)
+            var elBg = window.getComputedStyle(el).backgroundColor || '';
+            var bgM = elBg.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (bgM) {
+                var r = parseInt(bgM[1]), g = parseInt(bgM[2]), b = parseInt(bgM[3]);
+                // Light blue-ish background (like the screenshot shows)
+                if (r > 180 && g > 200 && b > 220 && !(r === 255 && g === 255 && b === 255)) {
+                    isUnread = true;
+                }
+                // Any non-white, non-transparent colored bg
+                if (b > r && b > 200 && g > 200) isUnread = true;
+            }
+            
+            // Method 2: Check children for red colored text
+            var childEls = el.querySelectorAll('*');
+            var hasRedText = false;
+            for (var c = 0; c < childEls.length; c++) {
+                var cc = window.getComputedStyle(childEls[c]).color || '';
+                var ccm = cc.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+                if (ccm) {
+                    var cr = parseInt(ccm[1]), cg = parseInt(ccm[2]), cb = parseInt(ccm[3]);
+                    if (cr > 150 && cg < 100 && cb < 100) { hasRedText = true; break; }
                 }
             }
-
-            // Also check background highlight
-            var elStyle = window.getComputedStyle(el);
-            var bgColor = elStyle.backgroundColor || '';
-            var bgMatch = bgColor.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-            if (bgMatch) {
-                var br = parseInt(bgMatch[1]), bg2 = parseInt(bgMatch[2]), bb = parseInt(bgMatch[3]);
-                if (!(br === 255 && bg2 === 255 && bb === 255) && !(br === 0 && bg2 === 0 && bb === 0)) {
-                    if (br > 200 || bg2 > 200 || bb > 200) isUnread = true;
-                }
-            }
-
-            // Check for bold with number pattern
+            if (hasRedText) isUnread = true;
+            
+            // Method 3: Check for bold number pattern "X nových komentov"
             var boldEls = el.querySelectorAll('strong, b');
             for (var be = 0; be < boldEls.length; be++) {
-                var boldText = trimText(boldEls[be].textContent);
-                if (/^\d+\s+nov/i.test(boldText)) {
-                    isUnread = true;
-                    break;
-                }
+                var bTxt = trimText(boldEls[be].textContent);
+                if (/^\d+\s+nov/i.test(bTxt)) { isUnread = true; break; }
             }
-
-            // Build the full notification text from the element
-            // Use the complete text of the item as it appears on the page
-            var fullText = txt;
-
-            // If we found red text parts, deduplicate and join them as the notification text
-            if (redTextParts.length > 0) {
-                // Deduplicate: remove parts that are substrings of other parts
-                var unique = [];
-                for (var rp = 0; rp < redTextParts.length; rp++) {
-                    var isDuplicate = false;
-                    for (var rp2 = 0; rp2 < redTextParts.length; rp2++) {
-                        if (rp !== rp2 && redTextParts[rp2].length > redTextParts[rp].length && redTextParts[rp2].indexOf(redTextParts[rp]) > -1) {
-                            isDuplicate = true;
-                            break;
-                        }
-                    }
-                    if (!isDuplicate && unique.indexOf(redTextParts[rp]) === -1) {
-                        unique.push(redTextParts[rp]);
-                    }
-                }
-                fullText = unique.join(' ');
-            }
-
+            
+            // Method 4: Check if text matches typical reaction patterns  
+            var hasReactionPattern = /\d+\s+nov[ýy]ch\s+koment|označil|sleduje|reagoval|komentoval|okomentoval|správ/i.test(txt);
+            
+            if (!isUnread && !hasReactionPattern) continue;
+            
+            // Clean the text: remove trash icon text or extra whitespace
+            var cleanText = txt.replace(/🗑️?/g, '').replace(/\s+/g, ' ').trim();
+            
+            // Extract links for author/target
             var links = el.querySelectorAll('a');
             var author = '';
             var target = '';
@@ -688,7 +673,7 @@ private enum BirdzReakcieScrapeJS {
             items.push({
                 type: detectType(txt),
                 author: author,
-                text: fullText.substring(0, 300),
+                text: cleanText.substring(0, 300),
                 target: target,
                 time: time,
                 isUnread: isUnread
@@ -696,7 +681,7 @@ private enum BirdzReakcieScrapeJS {
 
             // Count unread badge
             if (isUnread) {
-                var numMatch = txt.match(/^(\d+)\s+nov/i);
+                var numMatch = txt.match(/(\d+)\s+nov[ýy]ch?\s+koment/i);
                 if (numMatch) {
                     unreadBadge += parseInt(numMatch[1], 10) || 0;
                 } else {
