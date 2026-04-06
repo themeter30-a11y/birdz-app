@@ -197,6 +197,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         content.badge = NSNumber(value: max(badge, 0))
         content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
         content.threadIdentifier = "birdz-reakcie"
+        content.categoryIdentifier = "BIRDZ_REAKCIA"
+
+        if #available(iOS 15.0, *) {
+            content.interruptionLevel = .active
+            content.relevanceScore = 1.0
+        }
 
         if let iconURL = Bundle.main.url(forResource: "birdz_notification", withExtension: "png") {
             do {
@@ -211,7 +217,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
 
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.0, repeats: false)
         let request = UNNotificationRequest(identifier: "birdz-bg-\(UUID().uuidString)", content: content, trigger: trigger)
 
         UNUserNotificationCenter.current().add(request) { error in
