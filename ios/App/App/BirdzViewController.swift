@@ -309,18 +309,18 @@ final class BirdzViewController: CAPBridgeViewController {
     }
 
     private func sendNotification(for item: BirdzScrapedNotificationItem, badge: Int, delay: TimeInterval) {
-        let type = item.type.isEmpty ? "Upozornenie" : item.type
-        let title = item.author.isEmpty ? "Birdz – \(type)" : "Birdz – \(type) od \(item.author)"
-
-        var bodyParts: [String] = []
-        if !item.text.isEmpty { bodyParts.append(item.text) }
-        if !item.target.isEmpty && !item.text.localizedCaseInsensitiveContains(item.target) {
-            bodyParts.append("➜ \(item.target)")
+        // Use the full unread text as the notification body
+        let body: String
+        if !item.text.isEmpty {
+            body = item.text
+        } else {
+            var bodyParts: [String] = []
+            if !item.author.isEmpty { bodyParts.append(item.author) }
+            if !item.target.isEmpty { bodyParts.append(item.target) }
+            body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: " · ")
         }
-        if !item.time.isEmpty { bodyParts.append("🕐 \(item.time)") }
 
-        let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
-        sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay, trackedItem: item)
+        sendNotification(title: "Birdz", subtitle: "", body: body, badge: badge, delay: delay, trackedItem: item)
     }
 
     private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 1.0, trackedItem: BirdzScrapedNotificationItem? = nil) {
