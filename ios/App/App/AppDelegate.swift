@@ -186,12 +186,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         ]
 
         for pattern in patterns {
-            if let match = firstStringMatch(in: stripped, pattern: pattern) {
+            if let match = firstStringMatch(in: stripped, pattern: pattern),
+               !match.lowercased().contains("tajné správy"),
+               !match.lowercased().contains("tajne spravy") {
                 return match
             }
         }
 
-        return stripped.isEmpty ? "Máš novú aktivitu v reakciách" : String(stripped.prefix(260))
+        return "Máš novú aktivitu v reakciách"
     }
 
     private func shouldSuppressZeroCommentNotification(in html: String, unreadBadge: Int) -> Bool {

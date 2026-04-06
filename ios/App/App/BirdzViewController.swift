@@ -574,7 +574,6 @@ private enum BirdzReakcieScrapeJS {
 
         function detectType(text) {
             var v = text.toLowerCase();
-            if (v.indexOf('tajn') > -1 || v.indexOf('správ') > -1 || v.indexOf('sprav') > -1) return 'Tajná správa';
             if (v.indexOf('reakci') > -1 || v.indexOf('status') > -1) return 'Reakcia na status';
             if (v.indexOf('koment') > -1 && v.indexOf('blog') > -1) return 'Komentár k blogu';
             if (v.indexOf('koment') > -1 && (v.indexOf('fotk') > -1 || v.indexOf('album') > -1 || v.indexOf('obráz') > -1)) return 'Komentár k fotke';
@@ -595,6 +594,17 @@ private enum BirdzReakcieScrapeJS {
             return r > 150 && g < 120 && b < 120;
         }
 
+        function isVisibleCandidate(el) {
+            if (!el) return false;
+            var style = window.getComputedStyle(el);
+            if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            var rect = el.getBoundingClientRect();
+            if (!rect || rect.width < 12 || rect.height < 12) return false;
+            if (rect.right <= 0 || rect.bottom <= 0) return false;
+            if (rect.left >= window.innerWidth || rect.top >= window.innerHeight * 1.5) return false;
+            return true;
+        }
+
         function isUnreadContainer(el) {
             if (!el) return false;
             var style = window.getComputedStyle(el);
@@ -610,13 +620,11 @@ private enum BirdzReakcieScrapeJS {
         function extractExactUnreadText(el) {
             if (!el) return '';
 
-            // Collect ALL text from red-colored or bold elements — no filtering
             var parts = [];
             var nodes = el.querySelectorAll('*');
 
             for (var i = 0; i < nodes.length; i++) {
                 var node = nodes[i];
-                // Skip nodes that have children with red text (avoid duplicates from parent)
                 if (node.children && node.children.length > 0) {
                     var hasRedChild = false;
                     for (var k = 0; k < node.children.length; k++) {
@@ -639,7 +647,6 @@ private enum BirdzReakcieScrapeJS {
                 }
             }
 
-            // If no red text found, try bold elements
             if (parts.length === 0) {
                 var bolds = el.querySelectorAll('strong, b');
                 for (var b = 0; b < bolds.length; b++) {
@@ -650,7 +657,6 @@ private enum BirdzReakcieScrapeJS {
 
             if (parts.length === 0) return '';
 
-            // Deduplicate: remove substrings
             var unique = [];
             for (var u = 0; u < parts.length; u++) {
                 var isDup = false;
@@ -668,6 +674,14 @@ private enum BirdzReakcieScrapeJS {
             return trimText(unique.join(' '));
         }
 
+        function isSecretMessageText(text) {
+            return /tajn[ée]?\s+správ|tajn[ée]?\s+sprav/i.test(text || '');
+        }
+
+        function looksLikeReactionText(text) {
+            return /(\d+\s+nov[ýy]ch?\s+koment|ťa\s+označil|ta\s+oznacil|sleduje|reagoval|komentoval|okomentoval)/i.test(text || '');
+        }
+
         var rawText = trimText(document.body ? (document.body.innerText || document.body.textContent || '') : '');
         var items = [];
         var unreadBadge = 0;
@@ -675,18 +689,24 @@ private enum BirdzReakcieScrapeJS {
 
         for (var i = 0; i < rows.length && items.length < 40; i++) {
             var el = rows[i];
+            if (!isVisibleCandidate(el)) continue;
+
             var txt = trimText(el.innerText || el.textContent || '');
             if (txt.length < 8 || txt.length > 500) continue;
             if (/^(Fórum|Statusy|Blogy|Obrázky|Ľudia|Nastavenia|Prihlás|Odhlás|Hľadaj|Pridaj|Roleta)/i.test(txt)) continue;
+            if (isSecretMessageText(txt)) continue;
 
             var exactUnreadText = extractExactUnreadText(el);
+            if (isSecretMessageText(exactUnreadText)) continue;
+
             var isUnread = !!exactUnreadText || isUnreadContainer(el);
-            var hasReactionPattern = /\d+\s+nov[ýy]ch\s+koment|označil|sleduje|reagoval|komentoval|okomentoval|správ/i.test(txt);
+            var candidateText = exactUnreadText || txt.replace(/🗑️?/g, '').replace(/\s+/g, ' ').trim();
+            if (!candidateText) continue;
+            if (isSecretMessageText(candidateText)) continue;
 
+            var hasReactionPattern = looksLikeReactionText(candidateText) || looksLikeReactionText(txt);
+            if (!hasReactionPattern) continue;
             if (!isUnread && !hasReactionPattern) continue;
-
-            var cleanText = exactUnreadText || txt.replace(/🗑️?/g, '').replace(/\s+/g, ' ').trim();
-            if (!cleanText) continue;
 
             var links = el.querySelectorAll('a');
             var author = '';
@@ -703,18 +723,18 @@ private enum BirdzReakcieScrapeJS {
             var time = timeEl ? trimText(timeEl.textContent) : '';
 
             items.push({
-                type: detectType(cleanText),
+                type: detectType(candidateText),
                 author: author,
-                text: cleanText.substring(0, 300),
+                text: candidateText.substring(0, 300),
                 target: target,
                 time: time
             });
 
             if (isUnread) {
-                var numMatch = cleanText.match(/(\d+)\s+nov[ýy]ch?\s+koment/i);
+                var numMatch = candidateText.match(/(\d+)\s+nov[ýy]ch?\s+koment/i);
                 if (numMatch) {
                     unreadBadge += parseInt(numMatch[1], 10) || 0;
-                } else if (/označil|sleduje|reagoval|komentoval|okomentoval|správ|sprav/i.test(cleanText)) {
+                } else if (/(ťa\s+označil|ta\s+oznacil|sleduje|reagoval|komentoval|okomentoval)/i.test(candidateText)) {
                     unreadBadge += 1;
                 }
             }
