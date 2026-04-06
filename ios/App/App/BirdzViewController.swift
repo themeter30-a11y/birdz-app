@@ -718,11 +718,22 @@ private enum BirdzReakcieScrapeJS {
             var links = el.querySelectorAll('a');
             var author = '';
             var target = '';
+            var itemLink = '';
             for (var j = 0; j < links.length; j++) {
                 var linkText = trimText(links[j].textContent);
+                var href = links[j].href || '';
                 if (linkText.length > 1 && linkText.length < 50) {
                     if (!author) author = linkText;
                     else if (!target) target = linkText;
+                }
+                if (!itemLink && href && href.indexOf('birdz.sk') > -1 && href !== 'https://www.birdz.sk/reakcie/') {
+                    itemLink = href;
+                }
+            }
+            if (!itemLink && links.length > 0) {
+                for (var lk = 0; lk < links.length; lk++) {
+                    var h = links[lk].href || '';
+                    if (h && h.indexOf('birdz.sk') > -1) { itemLink = h; break; }
                 }
             }
 
