@@ -610,32 +610,62 @@ private enum BirdzReakcieScrapeJS {
         function extractExactUnreadText(el) {
             if (!el) return '';
 
-            var exactParts = [];
-            var seen = {};
+            // Collect ALL text from red-colored or bold elements — no filtering
+            var parts = [];
             var nodes = el.querySelectorAll('*');
 
             for (var i = 0; i < nodes.length; i++) {
                 var node = nodes[i];
-                var text = trimText(node.textContent || '');
-                if (!text || text.length < 2) continue;
+                // Skip nodes that have children with red text (avoid duplicates from parent)
+                if (node.children && node.children.length > 0) {
+                    var hasRedChild = false;
+                    for (var k = 0; k < node.children.length; k++) {
+                        if (isRedColor(window.getComputedStyle(node.children[k]).color || '')) {
+                            hasRedChild = true;
+                            break;
+                        }
+                    }
+                    if (hasRedChild) continue;
+                }
 
                 var style = window.getComputedStyle(node);
-                var looksRed = isRedColor(style.color || '');
-                var looksBold = (parseInt(style.fontWeight, 10) || 0) >= 600 || /^(STRONG|B)$/.test(node.tagName);
-                var looksUnread = looksRed || looksBold;
-                var isCommentLine = /\d+\s+nov[ýy]ch?\s+koment/i.test(text) || /^[A-Za-zÁ-ž0-9_\-]+\s*:/i.test(text);
+                var nodeColor = style.color || '';
 
-                if (looksUnread && isCommentLine && !seen[text]) {
-                    seen[text] = true;
-                    exactParts.push(text);
+                if (isRedColor(nodeColor)) {
+                    var text = trimText(node.textContent || '');
+                    if (text.length > 1) {
+                        parts.push(text);
+                    }
                 }
             }
 
-            if (exactParts.length > 0) {
-                return trimText(exactParts.join(' '));
+            // If no red text found, try bold elements
+            if (parts.length === 0) {
+                var bolds = el.querySelectorAll('strong, b');
+                for (var b = 0; b < bolds.length; b++) {
+                    var bText = trimText(bolds[b].textContent || '');
+                    if (bText.length > 1) parts.push(bText);
+                }
             }
 
-            return '';
+            if (parts.length === 0) return '';
+
+            // Deduplicate: remove substrings
+            var unique = [];
+            for (var u = 0; u < parts.length; u++) {
+                var isDup = false;
+                for (var v = 0; v < parts.length; v++) {
+                    if (u !== v && parts[v].length > parts[u].length && parts[v].indexOf(parts[u]) > -1) {
+                        isDup = true;
+                        break;
+                    }
+                }
+                if (!isDup && unique.indexOf(parts[u]) === -1) {
+                    unique.push(parts[u]);
+                }
+            }
+
+            return trimText(unique.join(' '));
         }
 
         var items = [];
