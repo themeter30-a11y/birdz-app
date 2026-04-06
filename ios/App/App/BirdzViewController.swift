@@ -594,15 +594,15 @@ private enum BirdzReakcieScrapeJS {
             return r > 150 && g < 120 && b < 120;
         }
 
-        function isVisibleCandidate(el) {
+        function isRenderableCandidate(el) {
             if (!el) return false;
             var style = window.getComputedStyle(el);
-            if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-            var rect = el.getBoundingClientRect();
-            if (!rect || rect.width < 12 || rect.height < 12) return false;
-            if (rect.right <= 0 || rect.bottom <= 0) return false;
-            if (rect.left >= window.innerWidth || rect.top >= window.innerHeight * 1.5) return false;
-            return true;
+            return !!style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+        }
+
+        function isIgnoredContainer(el) {
+            if (!el || !el.closest) return false;
+            return !!el.closest('.sidebar-wrapper, .sidebar-nav, #header, .header, .header-main, .header_user_menu, nav, header, footer, .sidebar-search, .sidebar-avatar, .logos, .button-more, .button-set');
         }
 
         function isUnreadContainer(el) {
@@ -682,14 +682,18 @@ private enum BirdzReakcieScrapeJS {
             return /(\d+\s+nov[ýy]ch?\s+koment|ťa\s+označil|ta\s+oznacil|sleduje|reagoval|komentoval|okomentoval)/i.test(text || '');
         }
 
-        var rawText = trimText(document.body ? (document.body.innerText || document.body.textContent || '') : '');
+        var pageRoot = document.querySelector('#page') ||
+            document.querySelector('.page-content-wrapper') ||
+            document.querySelector('main') ||
+            document.body;
+        var rawText = trimText(pageRoot ? (pageRoot.innerText || pageRoot.textContent || '') : '');
         var items = [];
         var unreadBadge = 0;
-        var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
+        var rows = pageRoot.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
 
         for (var i = 0; i < rows.length && items.length < 40; i++) {
             var el = rows[i];
-            if (!isVisibleCandidate(el)) continue;
+            if (!isRenderableCandidate(el) || isIgnoredContainer(el)) continue;
 
             var txt = trimText(el.innerText || el.textContent || '');
             if (txt.length < 8 || txt.length > 500) continue;
