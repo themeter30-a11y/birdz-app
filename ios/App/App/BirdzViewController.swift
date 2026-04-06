@@ -710,7 +710,6 @@ private enum BirdzReakcieScrapeJS {
 
             var hasReactionPattern = looksLikeReactionText(candidateText) || looksLikeReactionText(txt);
             if (!hasReactionPattern) continue;
-            if (!isUnread && !hasReactionPattern) continue;
 
             var links = el.querySelectorAll('a');
             var author = '';
@@ -729,12 +728,12 @@ private enum BirdzReakcieScrapeJS {
             items.push({
                 type: detectType(candidateText),
                 author: author,
-                text: candidateText.substring(0, 300),
+                text: (exactUnreadText || candidateText).substring(0, 300),
                 target: target,
                 time: time
             });
 
-            if (isUnread) {
+            if (isUnread && exactUnreadText) {
                 var numMatch = candidateText.match(/(\d+)\s+nov[ýy]ch?\s+koment/i);
                 if (numMatch) {
                     unreadBadge += parseInt(numMatch[1], 10) || 0;
