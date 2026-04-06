@@ -243,70 +243,59 @@ final class BirdzViewController: CAPBridgeViewController {
 
         syncSystemBadge(with: unreadBadge)
 
-        guard !contentHash.isEmpty else { return }
-
-        if lastContentHash.isEmpty {
-            storeLastContentHash(contentHash)
-            print("BirdzScraper: Initial state stored, hash=\(contentHash)")
-            return
-        }
-
-        guard contentHash != lastContentHash else { return }
-
-        print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
-        storeLastContentHash(contentHash)
-
         let normalizedRawText = rawText.lowercased()
         let skip = normalizedRawText.contains("0 nových komment") || normalizedRawText.contains("0 nových koment") || normalizedRawText.contains("0 novych koment")
+        let effectiveUnreadCount = skip ? 0 : unreadBadge
+        let parsedItems = items.map(BirdzScrapedNotificationItem.init).filter { $0.isMeaningful }
+        let missingItems = BirdzNotificationSyncStore.unsentItems(from: parsedItems, unreadCount: effectiveUnreadCount)
+
+        guard !contentHash.isEmpty else { return }
+
+        let isInitialState = lastContentHash.isEmpty
+        let didContentChange = contentHash != lastContentHash
+
+        if isInitialState {
+            print("BirdzScraper: Initial state stored, hash=\(contentHash)")
+        } else if didContentChange {
+            print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
+        }
+
+        storeLastContentHash(contentHash)
 
         guard !skip else {
             print("BirdzScraper: Skipping notification – 0 nových komentárov")
             return
         }
 
-        if let topItem = items.first {
-            let type = topItem["type"] as? String ?? "Upozornenie"
-            let author = topItem["author"] as? String ?? ""
-            let text = topItem["text"] as? String ?? ""
-            let target = topItem["target"] as? String ?? ""
-            let time = topItem["time"] as? String ?? ""
-
-            let title: String
-            if !author.isEmpty {
-                title = "Birdz – \(type) od \(author)"
-            } else {
-                title = "Birdz – \(type)"
+        guard !missingItems.isEmpty else {
+            if effectiveUnreadCount > 0 && parsedItems.isEmpty && (isInitialState || didContentChange) {
+                let fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
+                sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
             }
+            return
+        }
 
-            var bodyParts: [String] = []
-            if !text.isEmpty { bodyParts.append(text) }
-            if !target.isEmpty { bodyParts.append("➜ \(target)") }
-            if !time.isEmpty { bodyParts.append("🕐 \(time)") }
-
-            let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
-            sendNotification(title: title, subtitle: type, body: body, badge: unreadBadge)
-        } else {
-            let fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
-            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
+        for (index, item) in missingItems.enumerated() {
+            sendNotification(for: item, badge: unreadBadge, delay: 0.35 + (Double(index) * 0.25))
         }
     }
 
-    private func syncSystemBadge(with unreadBadge: Int) {
-        let safeBadge = max(unreadBadge, 0)
-        UserDefaults.standard.set(safeBadge, forKey: StorageKeys.unreadBadge)
-        DispatchQueue.main.async {
-            UIApplication.shared.applicationIconBadgeNumber = safeBadge
+    private func sendNotification(for item: BirdzScrapedNotificationItem, badge: Int, delay: TimeInterval) {
+        let type = item.type.isEmpty ? "Upozornenie" : item.type
+        let title = item.author.isEmpty ? "Birdz – \(type)" : "Birdz – \(type) od \(item.author)"
+
+        var bodyParts: [String] = []
+        if !item.text.isEmpty { bodyParts.append(item.text) }
+        if !item.target.isEmpty && !item.text.localizedCaseInsensitiveContains(item.target) {
+            bodyParts.append("➜ \(item.target)")
         }
+        if !item.time.isEmpty { bodyParts.append("🕐 \(item.time)") }
+
+        let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
+        sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay, trackedItem: item)
     }
 
-    private func storeLastContentHash(_ hash: String) {
-        lastContentHash = hash
-        UserDefaults.standard.set(hash, forKey: StorageKeys.lastContentHash)
-    }
-
-    // MARK: - iOS Notifications
-
-    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int) {
+    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 0.5, trackedItem: BirdzScrapedNotificationItem? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         if !subtitle.isEmpty { content.subtitle = subtitle }
@@ -330,7 +319,7 @@ final class BirdzViewController: CAPBridgeViewController {
             }
         }
 
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(delay, 0.2), repeats: false)
         let request = UNNotificationRequest(
             identifier: "birdz-\(UUID().uuidString)",
             content: content,
@@ -340,8 +329,26 @@ final class BirdzViewController: CAPBridgeViewController {
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
                 print("BirdzScraper: Notification error: \(error.localizedDescription)")
+                return
+            }
+
+            if let trackedItem {
+                BirdzNotificationSyncStore.markDelivered(trackedItem)
             }
         }
+    }
+
+    private func syncSystemBadge(with unreadBadge: Int) {
+        let safeBadge = max(unreadBadge, 0)
+        UserDefaults.standard.set(safeBadge, forKey: StorageKeys.unreadBadge)
+        DispatchQueue.main.async {
+            UIApplication.shared.applicationIconBadgeNumber = safeBadge
+        }
+    }
+
+    private func storeLastContentHash(_ hash: String) {
+        lastContentHash = hash
+        UserDefaults.standard.set(hash, forKey: StorageKeys.lastContentHash)
     }
 
     // MARK: - Deep link
@@ -560,7 +567,7 @@ private enum BirdzReakcieScrapeJS {
 
         var items = [];
         var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
-        for (var i = 0; i < rows.length && items.length < 10; i++) {
+        for (var i = 0; i < rows.length && items.length < 40; i++) {
             var el = rows[i];
             var txt = trimText(el.innerText || el.textContent || '');
             if (txt.length < 5 || txt.length > 500) continue;
