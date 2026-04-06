@@ -708,7 +708,11 @@ private enum BirdzReakcieScrapeJS {
             if (!candidateText) continue;
             if (isSecretMessageText(candidateText)) continue;
 
-            var hasReactionPattern = looksLikeReactionText(candidateText) || looksLikeReactionText(txt);
+            // Skip zero-count items
+            if (/^0\s+nov[ýy]ch?\s+koment/i.test(candidateText)) continue;
+
+            // candidateText itself must contain a reaction pattern
+            var hasReactionPattern = looksLikeReactionText(candidateText);
             if (!hasReactionPattern) continue;
 
             var links = el.querySelectorAll('a');
