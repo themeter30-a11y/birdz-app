@@ -208,13 +208,18 @@ final class BirdzViewController: CAPBridgeViewController {
     private func processScrapedItems(_ payload: [String: Any]) {
         let contentHash = payload["contentHash"] as? String ?? ""
         let items = payload["items"] as? [[String: Any]] ?? []
-        let totalCount = payload["totalCount"] as? Int ?? items.count
+        let unreadCount = payload["unreadBadge"] as? Int ?? items.count
+
+        // Always keep app badge in sync with actual unread count
+        DispatchQueue.main.async {
+            UIApplication.shared.applicationIconBadgeNumber = unreadCount
+        }
 
         // First run: just store the state, don't notify
         if isFirstScrape {
             lastContentHash = contentHash
             isFirstScrape = false
-            print("BirdzScraper: Initial state stored, hash=\(contentHash), \(items.count) items")
+            print("BirdzScraper: Initial state stored, hash=\(contentHash), unread=\(unreadCount)")
             return
         }
 
@@ -248,9 +253,9 @@ final class BirdzViewController: CAPBridgeViewController {
 
                     let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
 
-                    sendNotification(title: title, subtitle: type, body: body, badge: totalCount)
+                    sendNotification(title: title, subtitle: type, body: body, badge: unreadCount)
                 } else {
-                    sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: 1)
+                    sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: unreadCount)
                 }
             } else {
                 print("BirdzScraper: Skipping notification – 0 nových komentárov")
