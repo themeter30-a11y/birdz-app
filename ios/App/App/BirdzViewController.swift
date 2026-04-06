@@ -209,61 +209,67 @@ final class BirdzViewController: CAPBridgeViewController {
     private func processScrapedItems(_ payload: [String: Any]) {
         let contentHash = payload["contentHash"] as? String ?? ""
         let items = payload["items"] as? [[String: Any]] ?? []
-        let unreadCount = payload["unreadBadge"] as? Int ?? items.count
-
-        // Always keep app badge in sync with actual unread count
-        DispatchQueue.main.async {
-            UIApplication.shared.applicationIconBadgeNumber = unreadCount
-        }
 
         // First run: just store the state, don't notify
         if isFirstScrape {
             lastContentHash = contentHash
             isFirstScrape = false
-            print("BirdzScraper: Initial state stored, hash=\(contentHash), unread=\(unreadCount)")
+            // Reset badge when app opens
+            pendingBadgeCount = 0
+            DispatchQueue.main.async {
+                UIApplication.shared.applicationIconBadgeNumber = 0
+            }
+            print("BirdzScraper: Initial state stored, hash=\(contentHash)")
             return
         }
 
-        // ANY change at all triggers notification
-        if contentHash != lastContentHash {
-            print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
+        // No change — do nothing
+        guard contentHash != lastContentHash else { return }
 
-            // Skip notification if page says "0 nových komentárov"
-            let rawText = (payload["rawText"] as? String ?? "").lowercased()
-            let skip = rawText.contains("0 nových komment") || rawText.contains("0 nových koment") || rawText.contains("0 novych koment")
+        print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
 
-            if !skip {
-                if let topItem = items.first {
-                    let type = topItem["type"] as? String ?? "Upozornenie"
-                    let author = topItem["author"] as? String ?? ""
-                    let text = topItem["text"] as? String ?? ""
-                    let target = topItem["target"] as? String ?? ""
-                    let time = topItem["time"] as? String ?? ""
+        // Skip notification if page says "0 nových komentárov"
+        let rawText = (payload["rawText"] as? String ?? "").lowercased()
+        let skip = rawText.contains("0 nových komment") || rawText.contains("0 nových koment") || rawText.contains("0 novych koment")
 
-                    let title: String
-                    if !author.isEmpty {
-                        title = "Birdz – \(type) od \(author)"
-                    } else {
-                        title = "Birdz – \(type)"
-                    }
+        if !skip {
+            // Increment badge by 1 for each real change
+            pendingBadgeCount += 1
 
-                    var bodyParts: [String] = []
-                    if !text.isEmpty { bodyParts.append(text) }
-                    if !target.isEmpty { bodyParts.append("➜ \(target)") }
-                    if !time.isEmpty { bodyParts.append("🕐 \(time)") }
-
-                    let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
-
-                    sendNotification(title: title, subtitle: type, body: body, badge: unreadCount)
-                } else {
-                    sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: unreadCount)
-                }
-            } else {
-                print("BirdzScraper: Skipping notification – 0 nových komentárov")
+            DispatchQueue.main.async {
+                UIApplication.shared.applicationIconBadgeNumber = self.pendingBadgeCount
             }
 
-            lastContentHash = contentHash
+            if let topItem = items.first {
+                let type = topItem["type"] as? String ?? "Upozornenie"
+                let author = topItem["author"] as? String ?? ""
+                let text = topItem["text"] as? String ?? ""
+                let target = topItem["target"] as? String ?? ""
+                let time = topItem["time"] as? String ?? ""
+
+                let title: String
+                if !author.isEmpty {
+                    title = "Birdz – \(type) od \(author)"
+                } else {
+                    title = "Birdz – \(type)"
+                }
+
+                var bodyParts: [String] = []
+                if !text.isEmpty { bodyParts.append(text) }
+                if !target.isEmpty { bodyParts.append("➜ \(target)") }
+                if !time.isEmpty { bodyParts.append("🕐 \(time)") }
+
+                let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
+
+                sendNotification(title: title, subtitle: type, body: body, badge: pendingBadgeCount)
+            } else {
+                sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: pendingBadgeCount)
+            }
+        } else {
+            print("BirdzScraper: Skipping notification – 0 nových komentárov")
         }
+
+        lastContentHash = contentHash
     }
 
     // MARK: - iOS Notifications
