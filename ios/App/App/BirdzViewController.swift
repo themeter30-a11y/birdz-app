@@ -668,6 +668,7 @@ private enum BirdzReakcieScrapeJS {
             return trimText(unique.join(' '));
         }
 
+        var rawText = trimText(document.body ? (document.body.innerText || document.body.textContent || '') : '');
         var items = [];
         var unreadBadge = 0;
         var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
