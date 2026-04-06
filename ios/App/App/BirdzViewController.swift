@@ -222,32 +222,38 @@ final class BirdzViewController: CAPBridgeViewController {
         if contentHash != lastContentHash {
             print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
 
-            if let topItem = items.first {
-                let type = topItem["type"] as? String ?? "Upozornenie"
-                let author = topItem["author"] as? String ?? ""
-                let text = topItem["text"] as? String ?? ""
-                let target = topItem["target"] as? String ?? ""
-                let time = topItem["time"] as? String ?? ""
+            // Skip notification if page says "0 nových komentárov"
+            let rawText = (payload["rawText"] as? String ?? "").lowercased()
+            let skip = rawText.contains("0 nových komment") || rawText.contains("0 nových koment") || rawText.contains("0 novych koment")
 
-                // Build rich title
-                let title: String
-                if !author.isEmpty {
-                    title = "Birdz – \(type) od \(author)"
+            if !skip {
+                if let topItem = items.first {
+                    let type = topItem["type"] as? String ?? "Upozornenie"
+                    let author = topItem["author"] as? String ?? ""
+                    let text = topItem["text"] as? String ?? ""
+                    let target = topItem["target"] as? String ?? ""
+                    let time = topItem["time"] as? String ?? ""
+
+                    let title: String
+                    if !author.isEmpty {
+                        title = "Birdz – \(type) od \(author)"
+                    } else {
+                        title = "Birdz – \(type)"
+                    }
+
+                    var bodyParts: [String] = []
+                    if !text.isEmpty { bodyParts.append(text) }
+                    if !target.isEmpty { bodyParts.append("➜ \(target)") }
+                    if !time.isEmpty { bodyParts.append("🕐 \(time)") }
+
+                    let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
+
+                    sendNotification(title: title, subtitle: type, body: body, badge: totalCount)
                 } else {
-                    title = "Birdz – \(type)"
+                    sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: 1)
                 }
-
-                // Build rich body with all available info
-                var bodyParts: [String] = []
-                if !text.isEmpty { bodyParts.append(text) }
-                if !target.isEmpty { bodyParts.append("➜ \(target)") }
-                if !time.isEmpty { bodyParts.append("🕐 \(time)") }
-
-                let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
-
-                sendNotification(title: title, subtitle: type, body: body, badge: totalCount)
             } else {
-                sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: 1)
+                print("BirdzScraper: Skipping notification – 0 nových komentárov")
             }
 
             lastContentHash = contentHash
