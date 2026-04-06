@@ -18,7 +18,25 @@ struct BirdzScrapedNotificationItem {
     }
 
     var isMeaningful: Bool {
-        !type.isEmpty || !author.isEmpty || !text.isEmpty || !target.isEmpty
+        !type.isEmpty || !author.isEmpty || !text.isEmpty || !target.isEmpty || !link.isEmpty
+    }
+
+    var isRelevantNotification: Bool {
+        let value = Self.normalize(text)
+        guard !value.isEmpty, !link.isEmpty else { return false }
+
+        if value.contains("tajné správy") || value.contains("tajne spravy") {
+            return false
+        }
+
+        if value.range(of: #"^0\s+nov[ýy]ch?\s+koment"#, options: .regularExpression) != nil {
+            return false
+        }
+
+        return value.range(
+            of: #"(\d+\s+nov[ýy]ch?\s+koment|ťa\s+označil|ta\s+oznacil|sleduje|reagoval|komentoval|okomentoval)"#,
+            options: .regularExpression
+        ) != nil
     }
 
     var fingerprint: String {
@@ -27,8 +45,47 @@ struct BirdzScrapedNotificationItem {
             Self.normalize(author),
             Self.normalize(text),
             Self.normalize(target),
-            Self.normalize(time)
+            Self.normalize(time),
+            Self.normalize(link)
         ].joined(separator: "|"))
+    }
+
+    var deduplicationKey: String {
+        let canonicalText = Self.canonicalNotificationText(text)
+        if !canonicalText.isEmpty && !link.isEmpty {
+            return Self.normalize(link) + "|" + canonicalText
+        }
+        if !canonicalText.isEmpty {
+            return canonicalText
+        }
+        return fingerprint
+    }
+
+    var rankingScore: Int {
+        var score = text.count
+        if !link.isEmpty { score += 1000 }
+        if !target.isEmpty { score += 100 }
+        if !author.isEmpty { score += 50 }
+        score += leadingUnreadCount * 25
+        return score
+    }
+
+    private var leadingUnreadCount: Int {
+        guard let firstToken = text.split(separator: " ").first,
+              let count = Int(firstToken) else {
+            return 1
+        }
+        return count
+    }
+
+    private static func canonicalNotificationText(_ value: String) -> String {
+        trim(value)
+            .replacingOccurrences(
+                of: #"^\d+\s+nov[ýy]ch?\s+koment[a-záäčďéíĺľňóôŕšťúýž]*\s+"#,
+                with: "",
+                options: .regularExpression
+            )
+            .lowercased()
     }
 
     private static func trim(_ value: String?) -> String {
@@ -45,6 +102,25 @@ struct BirdzScrapedNotificationItem {
 enum BirdzNotificationSyncStore {
     private static let deliveredCountsKey = "birdz_delivered_notification_counts"
 
+    static func deduplicatedItems(from parsedItems: [BirdzScrapedNotificationItem]) -> [BirdzScrapedNotificationItem] {
+        var deduplicated: [BirdzScrapedNotificationItem] = []
+        var indexByKey: [String: Int] = [:]
+
+        for item in parsedItems where item.isRelevantNotification {
+            let key = item.deduplicationKey
+            if let existingIndex = indexByKey[key] {
+                if item.rankingScore > deduplicated[existingIndex].rankingScore {
+                    deduplicated[existingIndex] = item
+                }
+            } else {
+                indexByKey[key] = deduplicated.count
+                deduplicated.append(item)
+            }
+        }
+
+        return deduplicated
+    }
+
     static func unsentItems(from parsedItems: [BirdzScrapedNotificationItem], unreadCount: Int) -> [BirdzScrapedNotificationItem] {
         let safeUnreadCount = max(unreadCount, 0)
         guard safeUnreadCount > 0 else {
@@ -52,7 +128,8 @@ enum BirdzNotificationSyncStore {
             return []
         }
 
-        let visibleUnreadItems = Array(parsedItems.prefix(safeUnreadCount))
+        let relevantItems = deduplicatedItems(from: parsedItems)
+        let visibleUnreadItems = Array(relevantItems.prefix(safeUnreadCount))
         guard !visibleUnreadItems.isEmpty else {
             return []
         }
