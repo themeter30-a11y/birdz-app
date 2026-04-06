@@ -28,7 +28,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             print("BirdzBG: Notification permission granted=\(granted)")
         }
 
-        clearStaleBirdzNotifications()
+        // Restore badge from saved value
+        let savedBadge = UserDefaults.standard.integer(forKey: StorageKeys.unreadBadge)
+        UIApplication.shared.applicationIconBadgeNumber = savedBadge
 
         BGTaskScheduler.shared.register(forTaskWithIdentifier: AppDelegate.bgTaskIdentifier, using: nil) { task in
             guard let refreshTask = task as? BGAppRefreshTask else {
@@ -152,32 +154,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }.resume()
     }
 
-    private func clearStaleBirdzNotifications() {
-        let center = UNUserNotificationCenter.current()
-
-        center.getPendingNotificationRequests { requests in
-            let pendingIds = requests
-                .filter { $0.identifier.hasPrefix("birdz") }
-                .map(\.identifier)
-
-            if !pendingIds.isEmpty {
-                center.removePendingNotificationRequests(withIdentifiers: pendingIds)
-                print("BirdzBG: Cleared stale pending notifications=\(pendingIds.count)")
-            }
-        }
-
-        center.getDeliveredNotifications { notifications in
-            let deliveredIds = notifications
-                .map(\.request)
-                .filter { $0.identifier.hasPrefix("birdz") }
-                .map(\.identifier)
-
-            if !deliveredIds.isEmpty {
-                center.removeDeliveredNotifications(withIdentifiers: deliveredIds)
-                print("BirdzBG: Cleared stale delivered notifications=\(deliveredIds.count)")
-            }
-        }
-    }
+    // Removed clearStaleBirdzNotifications — it was wiping badge and delivered notifications on every launch
 
     private func simpleHash(_ str: String) -> String {
         var hash = 0
