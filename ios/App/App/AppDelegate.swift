@@ -7,7 +7,7 @@ import UserNotifications
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
     private enum StorageKeys {
-        static let lastContentHash = "birdz_last_content_hash"
+        static let lastBackgroundContentHash = "birdz_last_background_content_hash"
         static let unreadBadge = "birdz_unread_badge"
     }
 
@@ -101,7 +101,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
             let html = String(data: data, encoding: .utf8) ?? ""
             let newHash = self.simpleHash(html)
-            let savedHash = UserDefaults.standard.string(forKey: StorageKeys.lastContentHash) ?? ""
+            let savedHash = UserDefaults.standard.string(forKey: StorageKeys.lastBackgroundContentHash) ?? ""
             let unreadBadge = self.extractUnreadBadge(from: html) ?? UserDefaults.standard.integer(forKey: StorageKeys.unreadBadge)
 
             UserDefaults.standard.set(unreadBadge, forKey: StorageKeys.unreadBadge)
@@ -115,7 +115,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 self.sendBackgroundNotification(body: snippet, badge: unreadBadge)
             }
 
-            UserDefaults.standard.set(newHash, forKey: StorageKeys.lastContentHash)
+            UserDefaults.standard.set(newHash, forKey: StorageKeys.lastBackgroundContentHash)
             completion(true, changed)
         }.resume()
     }
