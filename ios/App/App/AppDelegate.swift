@@ -17,6 +17,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
 
+        // Set notification delegate early so iOS always has a delegate for local notifications
+        UNUserNotificationCenter.current().delegate = self
+
+        // Request notification permissions early
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+            if let error {
+                print("BirdzBG: Auth error: \(error.localizedDescription)")
+            }
+            print("BirdzBG: Notification permission granted=\(granted)")
+        }
+
         BGTaskScheduler.shared.register(forTaskWithIdentifier: AppDelegate.bgTaskIdentifier, using: nil) { task in
             guard let refreshTask = task as? BGAppRefreshTask else {
                 task.setTaskCompleted(success: false)
@@ -39,6 +50,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidBecomeActive(_ application: UIApplication) {}
 
     func applicationWillTerminate(_ application: UIApplication) {}
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {}
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {}
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
         return ApplicationDelegateProxy.shared.application(app, open: url, options: options)
@@ -219,7 +233,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return Int(text[valueRange])
     }
 
-    private func sendBackgroundNotification(body: String, badge: Int, completion: @escaping (Bool) -> Void) {
+    func sendBackgroundNotification(body: String, badge: Int, completion: @escaping (Bool) -> Void) {
         let content = UNMutableNotificationContent()
         content.title = "Birdz"
         content.body = body
@@ -234,25 +248,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             content.relevanceScore = 1.0
         }
 
-        if let iconURL = Bundle.main.url(forResource: "birdz_notification", withExtension: "png") {
-            do {
-                let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
-                let tmpFile = tmpDir.appendingPathComponent("birdz_notification.png")
-                try FileManager.default.copyItem(at: iconURL, to: tmpFile)
-                let attachment = try UNNotificationAttachment(identifier: "birdz-icon", url: tmpFile, options: nil)
-                content.attachments = [attachment]
-            } catch {
-                print("BirdzBG: Attachment error: \(error.localizedDescription)")
-            }
-        }
-
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.0, repeats: false)
         let request = UNNotificationRequest(identifier: "birdz-bg-\(UUID().uuidString)", content: content, trigger: trigger)
-
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            print("BirdzBG: Notification settings auth=\(settings.authorizationStatus.rawValue) alert=\(settings.alertSetting.rawValue) center=\(settings.notificationCenterSetting.rawValue) badge=\(settings.badgeSetting.rawValue) sound=\(settings.soundSetting.rawValue)")
-        }
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error {
@@ -261,8 +258,31 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 return
             }
 
-            print("BirdzBG: Notification scheduled")
+            print("BirdzBG: ✅ Notification scheduled successfully id=\(request.identifier)")
+
+            // Verify it's actually pending
+            UNUserNotificationCenter.current().getPendingNotificationRequests { pending in
+                print("BirdzBG: Pending notifications count=\(pending.count)")
+            }
+
             completion(true)
         }
+    }
+}
+
+// MARK: - UNUserNotificationCenterDelegate
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        print("BirdzBG: willPresent called for \(notification.request.identifier)")
+        completionHandler([.banner, .list, .sound, .badge])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        completionHandler()
     }
 }
