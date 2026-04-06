@@ -5,6 +5,11 @@ import UserNotifications
 
 final class BirdzViewController: CAPBridgeViewController {
 
+    private enum StorageKeys {
+        static let lastContentHash = "birdz_last_content_hash"
+        static let unreadBadge = "birdz_unread_badge"
+    }
+
     // MARK: - Properties
 
     private var pollTimer: Timer?
@@ -15,10 +20,9 @@ final class BirdzViewController: CAPBridgeViewController {
     // Scraper: hidden webview that loads /reakcie/ every 5s
     private var scraperWebView: WKWebView?
     private let scraperHandler = "birdzReakcieScraper"
-    private var lastContentHash: String = ""
-    private var isFirstScrape = true
+    private var lastContentHash: String = UserDefaults.standard.string(forKey: StorageKeys.lastContentHash) ?? ""
     private var scraperIsLoading = false
-    private var pendingBadgeCount: Int = 0
+    private var scraperTimeoutWorkItem: DispatchWorkItem?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -55,18 +59,13 @@ final class BirdzViewController: CAPBridgeViewController {
     // MARK: - Lifecycle
 
     @objc private func handleAppDidBecomeActive() {
-        pendingBadgeCount = 0
-        UserDefaults.standard.set(0, forKey: "birdz_pending_badge")
-        DispatchQueue.main.async {
-            UIApplication.shared.applicationIconBadgeNumber = 0
-        }
-        isFirstScrape = true
         configureWebViewIfNeeded()
+        syncSystemBadge(with: UserDefaults.standard.integer(forKey: StorageKeys.unreadBadge))
         startPolling()
     }
 
     @objc private func handleAppWillResignActive() {
-        // Keep polling even in background
+        // Foreground timer pauses in background by iOS design.
     }
 
     private func registerLifecycleObservers() {
@@ -91,12 +90,17 @@ final class BirdzViewController: CAPBridgeViewController {
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsLinkPreview = true
 
-        // Pinch-to-zoom backup
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        pinch.delegate = self
-        wv.scrollView.addGestureRecognizer(pinch)
+        let hasCustomPinch = wv.scrollView.gestureRecognizers?.contains(where: { gesture in
+            guard let pinch = gesture as? UIPinchGestureRecognizer else { return false }
+            return pinch.delegate === self
+        }) ?? false
 
-        // Pull-to-refresh
+        if !hasCustomPinch {
+            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+            pinch.delegate = self
+            wv.scrollView.addGestureRecognizer(pinch)
+        }
+
         if refreshControl == nil {
             let rc = UIRefreshControl()
             rc.tintColor = .systemRed
@@ -105,7 +109,6 @@ final class BirdzViewController: CAPBridgeViewController {
             refreshControl = rc
         }
 
-        // Inject zoom-fix JS
         if !didInstallScripts {
             let script = WKUserScript(
                 source: BirdzWebViewJS.source,
@@ -144,6 +147,7 @@ final class BirdzViewController: CAPBridgeViewController {
 
     @objc private func handleRefresh() {
         webView?.reload()
+        loadReakciePage()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.refreshControl?.endRefreshing()
         }
@@ -160,14 +164,17 @@ final class BirdzViewController: CAPBridgeViewController {
     // MARK: - Hidden Scraper WebView (polls /reakcie/ every 5s)
 
     private func setupScraperWebView() {
+        guard scraperWebView == nil else { return }
+
         let config = WKWebViewConfiguration()
-        // Share cookies/session with main webview so we see logged-in content
         config.processPool = webView?.configuration.processPool ?? WKProcessPool()
         config.websiteDataStore = webView?.configuration.websiteDataStore ?? .default()
         config.userContentController.add(self, name: scraperHandler)
 
         let scraper = WKWebView(frame: .zero, configuration: config)
         scraper.isHidden = true
+        scraper.navigationDelegate = self
+        scraper.scrollView.isScrollEnabled = false
         view.addSubview(scraper)
         scraperWebView = scraper
     }
@@ -176,38 +183,54 @@ final class BirdzViewController: CAPBridgeViewController {
 
     private func startPolling() {
         stopPolling()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        loadReakciePage()
+
+        let timer = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.loadReakciePage()
         }
-        // First scrape after 2s to let session load
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            self?.loadReakciePage()
-        }
+        RunLoop.main.add(timer, forMode: .common)
+        pollTimer = timer
     }
 
     private func stopPolling() {
         pollTimer?.invalidate()
         pollTimer = nil
+        scraperTimeoutWorkItem?.cancel()
+        scraperTimeoutWorkItem = nil
+        scraperIsLoading = false
     }
 
-    /// Load /reakcie/ in hidden webview, then inject scraping JS after page loads
+    private func armScraperTimeout() {
+        scraperTimeoutWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.scraperIsLoading = false
+            self.scraperWebView?.stopLoading()
+            print("BirdzScraper: Load timeout")
+        }
+
+        scraperTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: workItem)
+    }
+
     private func loadReakciePage() {
         guard !scraperIsLoading else { return }
-        guard let scraper = scraperWebView,
-              let url = URL(string: "https://www.birdz.sk/reakcie/") else { return }
+        guard let scraper = scraperWebView else { return }
+
+        var components = URLComponents(string: "https://www.birdz.sk/reakcie/")
+        components?.queryItems = [
+            URLQueryItem(name: "_birdz_ts", value: String(Int(Date().timeIntervalSince1970 * 1000)))
+        ]
+
+        guard let url = components?.url else { return }
 
         scraperIsLoading = true
-        scraper.load(URLRequest(url: url))
+        scraper.stopLoading()
 
-        // Wait for page to load, then inject scraper JS
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            self?.scraperWebView?.evaluateJavaScript(BirdzReakcieScrapeJS.source) { _, error in
-                self?.scraperIsLoading = false
-                if let error = error {
-                    print("BirdzScraper: JS error: \(error.localizedDescription)")
-                }
-            }
-        }
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        scraper.load(request)
+        armScraperTimeout()
     }
 
     // MARK: - Process scraped data from /reakcie/
@@ -215,67 +238,70 @@ final class BirdzViewController: CAPBridgeViewController {
     private func processScrapedItems(_ payload: [String: Any]) {
         let contentHash = payload["contentHash"] as? String ?? ""
         let items = payload["items"] as? [[String: Any]] ?? []
+        let rawText = payload["rawText"] as? String ?? ""
+        let unreadBadge = max(payload["unreadBadge"] as? Int ?? 0, 0)
 
-        // First run: just store the state, don't notify
-        if isFirstScrape {
-            lastContentHash = contentHash
-            isFirstScrape = false
-            // Reset badge when app opens
-            pendingBadgeCount = 0
-            DispatchQueue.main.async {
-                UIApplication.shared.applicationIconBadgeNumber = 0
-            }
+        syncSystemBadge(with: unreadBadge)
+
+        guard !contentHash.isEmpty else { return }
+
+        if lastContentHash.isEmpty {
+            storeLastContentHash(contentHash)
             print("BirdzScraper: Initial state stored, hash=\(contentHash)")
             return
         }
 
-        // No change — do nothing
         guard contentHash != lastContentHash else { return }
 
         print("BirdzScraper: Change detected! old=\(lastContentHash) new=\(contentHash)")
+        storeLastContentHash(contentHash)
 
-        // Skip notification if page says "0 nových komentárov"
-        let rawText = (payload["rawText"] as? String ?? "").lowercased()
-        let skip = rawText.contains("0 nových komment") || rawText.contains("0 nových koment") || rawText.contains("0 novych koment")
+        let normalizedRawText = rawText.lowercased()
+        let skip = normalizedRawText.contains("0 nových komment") || normalizedRawText.contains("0 nových koment") || normalizedRawText.contains("0 novych koment")
 
-        if !skip {
-            // Increment badge by 1 for each real change
-            pendingBadgeCount += 1
-
-            DispatchQueue.main.async {
-                UIApplication.shared.applicationIconBadgeNumber = self.pendingBadgeCount
-            }
-
-            if let topItem = items.first {
-                let type = topItem["type"] as? String ?? "Upozornenie"
-                let author = topItem["author"] as? String ?? ""
-                let text = topItem["text"] as? String ?? ""
-                let target = topItem["target"] as? String ?? ""
-                let time = topItem["time"] as? String ?? ""
-
-                let title: String
-                if !author.isEmpty {
-                    title = "Birdz – \(type) od \(author)"
-                } else {
-                    title = "Birdz – \(type)"
-                }
-
-                var bodyParts: [String] = []
-                if !text.isEmpty { bodyParts.append(text) }
-                if !target.isEmpty { bodyParts.append("➜ \(target)") }
-                if !time.isEmpty { bodyParts.append("🕐 \(time)") }
-
-                let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
-
-                sendNotification(title: title, subtitle: type, body: body, badge: pendingBadgeCount)
-            } else {
-                sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: "Máš novú aktivitu v reakciách", badge: pendingBadgeCount)
-            }
-        } else {
+        guard !skip else {
             print("BirdzScraper: Skipping notification – 0 nových komentárov")
+            return
         }
 
-        lastContentHash = contentHash
+        if let topItem = items.first {
+            let type = topItem["type"] as? String ?? "Upozornenie"
+            let author = topItem["author"] as? String ?? ""
+            let text = topItem["text"] as? String ?? ""
+            let target = topItem["target"] as? String ?? ""
+            let time = topItem["time"] as? String ?? ""
+
+            let title: String
+            if !author.isEmpty {
+                title = "Birdz – \(type) od \(author)"
+            } else {
+                title = "Birdz – \(type)"
+            }
+
+            var bodyParts: [String] = []
+            if !text.isEmpty { bodyParts.append(text) }
+            if !target.isEmpty { bodyParts.append("➜ \(target)") }
+            if !time.isEmpty { bodyParts.append("🕐 \(time)") }
+
+            let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
+            sendNotification(title: title, subtitle: type, body: body, badge: unreadBadge)
+        } else {
+            let fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
+            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
+        }
+    }
+
+    private func syncSystemBadge(with unreadBadge: Int) {
+        let safeBadge = max(unreadBadge, 0)
+        UserDefaults.standard.set(safeBadge, forKey: StorageKeys.unreadBadge)
+        DispatchQueue.main.async {
+            UIApplication.shared.applicationIconBadgeNumber = safeBadge
+        }
+    }
+
+    private func storeLastContentHash(_ hash: String) {
+        lastContentHash = hash
+        UserDefaults.standard.set(hash, forKey: StorageKeys.lastContentHash)
     }
 
     // MARK: - iOS Notifications
@@ -286,12 +312,11 @@ final class BirdzViewController: CAPBridgeViewController {
         if !subtitle.isEmpty { content.subtitle = subtitle }
         content.body = body
         content.sound = .default
-        content.badge = NSNumber(value: badge)
+        content.badge = NSNumber(value: max(badge, 0))
         content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
         content.threadIdentifier = "birdz-reakcie"
         content.categoryIdentifier = "BIRDZ_REAKCIA"
 
-        // Attach Birdz icon to the notification
         if let iconURL = Bundle.main.url(forResource: "birdz_notification", withExtension: "png") {
             do {
                 let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -323,8 +348,12 @@ final class BirdzViewController: CAPBridgeViewController {
 
     private func navigateToURL(_ urlString: String) {
         guard let wv = webView else { return }
+        let escapedURL = urlString
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+
         DispatchQueue.main.async {
-            wv.evaluateJavaScript("window.location.href = '\(urlString)';", completionHandler: nil)
+            wv.evaluateJavaScript("window.location.href = '\(escapedURL)';", completionHandler: nil)
         }
     }
 }
@@ -335,6 +364,39 @@ extension BirdzViewController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         return true
+    }
+}
+
+// MARK: - WKNavigationDelegate
+
+extension BirdzViewController: WKNavigationDelegate {
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard let scraper = scraperWebView, webView === scraper else { return }
+
+        scraperTimeoutWorkItem?.cancel()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak scraper] in
+            guard let self, let scraper else { return }
+            scraper.evaluateJavaScript(BirdzReakcieScrapeJS.source) { _, error in
+                self.scraperIsLoading = false
+                if let error {
+                    print("BirdzScraper: JS error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard let scraper = scraperWebView, webView === scraper else { return }
+        scraperTimeoutWorkItem?.cancel()
+        scraperIsLoading = false
+        print("BirdzScraper: Load failed: \(error.localizedDescription)")
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard let scraper = scraperWebView, webView === scraper else { return }
+        scraperTimeoutWorkItem?.cancel()
+        scraperIsLoading = false
+        print("BirdzScraper: Provisional load failed: \(error.localizedDescription)")
     }
 }
 
@@ -496,7 +558,6 @@ private enum BirdzReakcieScrapeJS {
             return 'Upozornenie';
         }
 
-        // Scrape notification items
         var items = [];
         var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
         for (var i = 0; i < rows.length && items.length < 10; i++) {
@@ -527,7 +588,7 @@ private enum BirdzReakcieScrapeJS {
             });
         }
 
-        // Badge
+        var rawText = trimText(document.body ? document.body.innerText : '');
         var unreadBadge = 0;
         var badgeEls = document.querySelectorAll('.badge, [class*="badge"], [class*="count"], [class*="notif"] span, .num, [class*="num"]');
         for (var b = 0; b < badgeEls.length; b++) {
@@ -538,12 +599,23 @@ private enum BirdzReakcieScrapeJS {
                 break;
             }
         }
-        if (unreadBadge === 0) unreadBadge = items.length;
 
-        var rawText = trimText(document.body ? document.body.innerText : '');
+        if (unreadBadge === 0) {
+            var unreadMatch = rawText.match(/(\d{1,3})\s+nov.{0,24}(?:koment|reakci|upozor|sprav|správ)/i);
+            if (unreadMatch) {
+                unreadBadge = parseInt(unreadMatch[1], 10) || 0;
+            }
+        }
+
         var contentHash = simpleHash(rawText);
 
-        handler.postMessage({ contentHash: contentHash, items: items, totalCount: items.length, unreadBadge: unreadBadge, rawText: rawText.slice(0, 500) });
+        handler.postMessage({
+            contentHash: contentHash,
+            items: items,
+            totalCount: items.length,
+            unreadBadge: unreadBadge,
+            rawText: rawText.slice(0, 500)
+        });
         return 'birdz-reakcie-scraped';
     })();
     """#
