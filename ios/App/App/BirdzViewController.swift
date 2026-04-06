@@ -682,14 +682,18 @@ private enum BirdzReakcieScrapeJS {
             return /(\d+\s+nov[ýy]ch?\s+koment|ťa\s+označil|ta\s+oznacil|sleduje|reagoval|komentoval|okomentoval)/i.test(text || '');
         }
 
-        var rawText = trimText(document.body ? (document.body.innerText || document.body.textContent || '') : '');
+        var pageRoot = document.querySelector('#page') ||
+            document.querySelector('.page-content-wrapper') ||
+            document.querySelector('main') ||
+            document.body;
+        var rawText = trimText(pageRoot ? (pageRoot.innerText || pageRoot.textContent || '') : '');
         var items = [];
         var unreadBadge = 0;
-        var rows = document.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
+        var rows = pageRoot.querySelectorAll('li, tr, .item, [class*="notif"], [class*="reakc"], div[class*="row"], .comment, article');
 
         for (var i = 0; i < rows.length && items.length < 40; i++) {
             var el = rows[i];
-            if (!isVisibleCandidate(el)) continue;
+            if (!isRenderableCandidate(el) || isIgnoredContainer(el)) continue;
 
             var txt = trimText(el.innerText || el.textContent || '');
             if (txt.length < 8 || txt.length > 500) continue;
