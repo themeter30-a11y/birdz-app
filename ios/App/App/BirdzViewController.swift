@@ -242,7 +242,6 @@ final class BirdzViewController: CAPBridgeViewController {
                 if !text.isEmpty { bodyParts.append(text) }
                 if !target.isEmpty { bodyParts.append("➜ \(target)") }
                 if !time.isEmpty { bodyParts.append("🕐 \(time)") }
-                if totalCount > 1 { bodyParts.append("📬 Celkom \(totalCount) notifikácií") }
 
                 let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
 
