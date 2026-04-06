@@ -55,6 +55,11 @@ final class BirdzViewController: CAPBridgeViewController {
     // MARK: - Lifecycle
 
     @objc private func handleAppDidBecomeActive() {
+        pendingBadgeCount = 0
+        DispatchQueue.main.async {
+            UIApplication.shared.applicationIconBadgeNumber = 0
+        }
+        isFirstScrape = true
         configureWebViewIfNeeded()
         startPolling()
     }
