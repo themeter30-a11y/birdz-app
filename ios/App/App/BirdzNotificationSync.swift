@@ -6,6 +6,7 @@ struct BirdzScrapedNotificationItem {
     let text: String
     let target: String
     let time: String
+    let link: String
 
     init(dictionary: [String: Any]) {
         type = Self.trim(dictionary["type"] as? String)
@@ -13,6 +14,7 @@ struct BirdzScrapedNotificationItem {
         text = Self.trim(dictionary["text"] as? String)
         target = Self.trim(dictionary["target"] as? String)
         time = Self.trim(dictionary["time"] as? String)
+        link = Self.trim(dictionary["link"] as? String)
     }
 
     var isMeaningful: Bool {

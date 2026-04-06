@@ -323,7 +323,8 @@ final class BirdzViewController: CAPBridgeViewController {
         content.body = body
         content.sound = .default
         content.badge = NSNumber(value: max(badge, 0))
-        content.userInfo = ["deepLink": "https://www.birdz.sk/reakcie/"]
+        let deepLink = trackedItem?.link.isEmpty == false ? trackedItem!.link : "https://www.birdz.sk/reakcie/"
+        content.userInfo = ["deepLink": deepLink]
         content.threadIdentifier = "birdz-reakcie"
         content.categoryIdentifier = "BIRDZ_REAKCIA"
 
