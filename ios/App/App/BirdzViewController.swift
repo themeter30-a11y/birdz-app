@@ -476,7 +476,7 @@ private enum BirdzReakcieScrapeJS {
         var rawText = trimText(document.body ? document.body.innerText : '');
         var contentHash = simpleHash(rawText);
 
-        // Extract detailed items with author, target, time
+        // Extract only UNREAD items (bold/strong text = unread on birdz.sk)
         var items = [];
         var elements = document.querySelectorAll('li, .item, .notification-item, [class*="reakci"], [class*="notif"], tr, .row');
         for (var i = 0; i < elements.length; i++) {
@@ -484,14 +484,22 @@ private enum BirdzReakcieScrapeJS {
             var text = trimText(el.textContent);
             if (!text || text.length < 10 || text.length > 500) continue;
 
+            // Check if this item is unread (bold, strong, or has unread/new class)
+            var isUnread = false;
+            var style = window.getComputedStyle(el);
+            if (style.fontWeight && (parseInt(style.fontWeight) >= 600 || style.fontWeight === 'bold')) isUnread = true;
+            if (!isUnread && el.querySelector('strong, b, [class*="bold"], [class*="unread"], [class*="new"], [class*="neprecitan"]')) isUnread = true;
+            if (!isUnread && (el.className || '').match(/bold|unread|new|neprecitan|active/i)) isUnread = true;
+
+            // Only collect unread items
+            if (!isUnread) continue;
+
             var timeEl = el.querySelector('time, .time, .date, [class*="time"], [class*="date"], small');
             var time = timeEl ? trimText(timeEl.textContent) : '';
 
-            // Try to extract author (usually a link or bold text at start)
             var authorEl = el.querySelector('a[href*="/profil/"], a[href*="/uzivatel/"], a[href*="/user/"], strong, b');
             var author = authorEl ? trimText(authorEl.textContent) : '';
 
-            // Try to extract target content (second link, or topic/status reference)
             var allLinks = el.querySelectorAll('a');
             var target = '';
             for (var j = 0; j < allLinks.length; j++) {
@@ -510,7 +518,7 @@ private enum BirdzReakcieScrapeJS {
                 time: time
             });
 
-            if (items.length >= 20) break;
+            if (items.length >= 10) break;
         }
 
         handler.postMessage({ contentHash: contentHash, items: items, totalCount: items.length, rawText: rawText.slice(0, 500) });
