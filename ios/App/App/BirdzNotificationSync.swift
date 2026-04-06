@@ -55,7 +55,9 @@ enum BirdzNotificationSyncStore {
             return []
         }
 
-        let deliveredCounts = loadDeliveredCounts()
+        let visibleCounts = makeCounts(from: visibleUnreadItems)
+        let deliveredCounts = prunedDeliveredCounts(for: visibleCounts)
+        storeDeliveredCounts(deliveredCounts)
         var currentCounts: [String: Int] = [:]
         var missingItems: [BirdzScrapedNotificationItem] = []
 
@@ -68,8 +70,13 @@ enum BirdzNotificationSyncStore {
             }
         }
 
-        storeDeliveredCounts(currentCounts)
         return missingItems
+    }
+
+    static func markDelivered(_ item: BirdzScrapedNotificationItem) {
+        var counts = loadDeliveredCounts()
+        counts[item.fingerprint, default: 0] += 1
+        storeDeliveredCounts(counts)
     }
 
     private static func loadDeliveredCounts() -> [String: Int] {
@@ -87,6 +94,28 @@ enum BirdzNotificationSyncStore {
         }
 
         return counts
+    }
+
+    private static func makeCounts(from items: [BirdzScrapedNotificationItem]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for item in items {
+            counts[item.fingerprint, default: 0] += 1
+        }
+        return counts
+    }
+
+    private static func prunedDeliveredCounts(for visibleCounts: [String: Int]) -> [String: Int] {
+        let deliveredCounts = loadDeliveredCounts()
+        var pruned: [String: Int] = [:]
+
+        for (fingerprint, visibleCount) in visibleCounts {
+            let capped = min(deliveredCounts[fingerprint, default: 0], visibleCount)
+            if capped > 0 {
+                pruned[fingerprint] = capped
+            }
+        }
+
+        return pruned
     }
 
     private static func storeDeliveredCounts(_ counts: [String: Int]) {

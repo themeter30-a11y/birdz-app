@@ -292,10 +292,10 @@ final class BirdzViewController: CAPBridgeViewController {
         if !item.time.isEmpty { bodyParts.append("🕐 \(item.time)") }
 
         let body = bodyParts.isEmpty ? "Máš novú notifikáciu na Birdz" : bodyParts.joined(separator: "\n")
-        sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay)
+        sendNotification(title: title, subtitle: type, body: body, badge: badge, delay: delay, trackedItem: item)
     }
 
-    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 0.5) {
+    private func sendNotification(title: String, subtitle: String = "", body: String, badge: Int, delay: TimeInterval = 0.5, trackedItem: BirdzScrapedNotificationItem? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         if !subtitle.isEmpty { content.subtitle = subtitle }
@@ -329,15 +329,13 @@ final class BirdzViewController: CAPBridgeViewController {
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
                 print("BirdzScraper: Notification error: \(error.localizedDescription)")
+                return
+            }
+
+            if let trackedItem {
+                BirdzNotificationSyncStore.markDelivered(trackedItem)
             }
         }
-    }
-
-    // MARK: - iOS Notifications
-
-    private func legacyFallbackNotification(from rawText: String, unreadBadge: Int) {
-            let fallbackBody = rawText.isEmpty ? "Máš novú aktivitu v reakciách" : String(rawText.prefix(220))
-            sendNotification(title: "Birdz", subtitle: "Nová aktivita", body: fallbackBody, badge: unreadBadge)
     }
 
     private func syncSystemBadge(with unreadBadge: Int) {
