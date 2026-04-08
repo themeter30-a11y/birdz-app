@@ -731,12 +731,11 @@ private enum BirdzReakcieScrapeJS {
             if (!candidateText) continue;
             if (isSecretMessageText(candidateText)) continue;
 
-            // Skip zero-count items
+            // Skip zero-count items (only exception)
             if (/^0\s+nov[ýy]ch?\s+koment/i.test(candidateText)) continue;
 
-            // candidateText itself must contain a reaction pattern
-            var hasReactionPattern = looksLikeReactionText(candidateText);
-            if (!hasReactionPattern) continue;
+            // Must have red unread text to be relevant
+            if (!exactUnreadText) continue;
 
             var links = el.querySelectorAll('a');
             var author = '';
@@ -777,7 +776,7 @@ private enum BirdzReakcieScrapeJS {
                 var numMatch = candidateText.match(/(\d+)\s+nov[ýy]ch?\s+koment/i);
                 if (numMatch) {
                     unreadBadge += parseInt(numMatch[1], 10) || 0;
-                } else if (/(ťa\s+označil|ta\s+oznacil|sleduje|reagoval|komentoval|okomentoval)/i.test(candidateText)) {
+                } else {
                     unreadBadge += 1;
                 }
             }

@@ -15,7 +15,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     static let bgTaskIdentifier = "app.lovable.birdz.reakcie.refresh"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
+        // Legacy background fetch deprecated in iOS 13; BGAppRefreshTask is used instead
 
         // Set notification delegate early so iOS always has a delegate for local notifications
         UNUserNotificationCenter.current().delegate = self
