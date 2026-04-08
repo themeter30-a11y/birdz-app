@@ -25,18 +25,18 @@ struct BirdzScrapedNotificationItem {
         let value = Self.normalize(text)
         guard !value.isEmpty, !link.isEmpty else { return false }
 
+        // Skip secret messages
         if value.contains("tajné správy") || value.contains("tajne spravy") {
             return false
         }
 
+        // Skip zero-count items (the ONLY exception)
         if value.range(of: #"^0\s+nov[ýy]ch?\s+koment"#, options: .regularExpression) != nil {
             return false
         }
 
-        return value.range(
-            of: #"(\d+\s+nov[ýy]ch?\s+koment|ťa\s+označil|ta\s+oznacil|sleduje|reagoval|komentoval|okomentoval)"#,
-            options: .regularExpression
-        ) != nil
+        // Any other red/unread text is relevant
+        return true
     }
 
     var fingerprint: String {
